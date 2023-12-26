@@ -38,8 +38,6 @@ global save_location #TODO is this needed?
 
 #TODO check imports for non-standard dependancies - easygui etc
 
-#TODO test on F4 without new STEM server? Is there any point with the update coming so soon?
-
 #TODO test refactored scan_4D_basic on microscope
 
 
