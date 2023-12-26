@@ -4,6 +4,7 @@ import math
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import Circle
+from matplotlib.patches import Annulus
 from matplotlib import patches, gridspec
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from matplotlib.figure import Figure
@@ -201,9 +202,13 @@ def virtual_ADF(image_array,camera_size=None):
         put_diffraction(diffraction)
         outer_circle = Circle(xy=(256,256),radius=outer_mask_value.val,color="red",fill=None)
         inner_circle = Circle(xy=(256,256),radius=inner_mask_value.val,color="red",fill=None)
+        fill = Annulus(xy=(256,256),r=outer_mask_value.val,width=outer_mask_value.val-inner_mask_value.val,color="red",alpha=0.2)
         ax[0].add_patch(outer_circle)
         ax[0].add_patch(inner_circle)
-
+        ax[0].add_patch(fill)
+        plt.setp(ax[0], xticks=[], yticks=[])  # removes the tick marks from the diffraction pattern display
+        ax[1].set_title("Virtual ADF")  # Adds title to diffraction plot
+        ax[0].set_title("Diffraction")  # adds title to navigation image
         fig.canvas.draw_idle() #stops the interactive plotting
 
     def reset(val):
@@ -218,7 +223,6 @@ def virtual_ADF(image_array,camera_size=None):
         ax[0].set_xlim(0, camera_pixels[0]) #axes size limits to number of pixels in camera
         ax[0].set_ylim(0, camera_pixels[1]) # axes size limits to number of pixels in camera
         ax[1].imshow(generated_image,cmap="gray") #sets the colourmap to grayscale
-
 
     def generate_image(inner_radius,outer_radius):
         print("inner",inner_radius)
@@ -254,7 +258,12 @@ def virtual_ADF(image_array,camera_size=None):
         outer_radius = outer_mask_value.val
         generated_image = generate_image(inner_radius,outer_radius)
         ax[1].clear()
-        ax[1].imshow(generated_image,cmap="gray")
+        ax[1].set_title("Virtual ADF")
+        ax[1].set_aspect(1)  # sets square aspect ratio for the plot
+        ax[1].set_xlim(0, dataset_pixels[1])  # axes limited to size of dataset with no excess
+        ax[1].set_ylim(0, dataset_pixels[0])  # axes limited to size of dataset with no excess
+        plt.setp(ax[0], xticks=[], yticks=[])  # removes the tick marks from the diffraction pattern display
+        ax[1].imshow(generated_image, cmap="gray")
         fig.canvas.draw_idle()  # stops the interactive plotting
         return generated_image
 
@@ -277,6 +286,8 @@ def virtual_ADF(image_array,camera_size=None):
             inner = plt.Circle((256,256), radius=inner_radius,color="red",fill=None) #adds a position marker at the selected XY
             ax.add_patch(inner)
             outer = plt.Circle((256,256), radius=outer_radius,color="red",fill=None) #adds a position marker at the selected XY
+            fill = Annulus(xy=256,r=outer_radius,width=outer_radius-inner_radius,color="red",alpha=0.2)
+            ax.add_patch(fill)
             ax.add_patch(outer)
 
             ax.imshow(diffraction,cmap="gray") #adds the navigation image to the plot
@@ -290,9 +301,9 @@ def virtual_ADF(image_array,camera_size=None):
             plt.subplots_adjust(top = 1, bottom = 0, right = 1, left = 0,
             hspace = 0, wspace = 0)
             plt.margins(0,0)
-            ax.invert_yaxis()
+            #ax.invert_yaxis()
             plt.savefig(filename_VDF,bbox_inches='tight',pad_inches = 0)
-            cv2.imwrite(filename_VDF,VDF_list[i].astype(np.uint16))
+            cv2.imwrite(filename_VDF,VDF.astype(np.uint16))
 
     max_angle = math.hypot(256,256)
     min_angle = 0
@@ -315,22 +326,34 @@ def virtual_ADF(image_array,camera_size=None):
     set_axes(generated_image=initial_image) # sets the axis scales
     
     ax[0].imshow(image_array[0][0],cmap="gray") #shows the pattern from 0,0 in the DP array
-    plt.setp(ax[0], xticks=[], yticks=[]) #removes the tick marks from the diffraction pattern display
+
     ax[1].set_title("Virtual ADF")  # Adds title to diffraction plot
     ax[0].set_title("Diffraction")  # adds title to navigation image
-    ax[1].imshow(initial_image)
+    ax[1].imshow(initial_image,cmap="gray") #produces an image based off the initial slider values
     # adjust the main plot to make room for the sliders
     fig.subplots_adjust(left=0.25, bottom=0.25)
 
+    ax[0].set_aspect(1)  # sets square aspect ratio for the plot
+    ax[1].set_aspect(1)  # sets square aspect ratio for the plot
+    ax[1].set_xlim(0, dataset_pixels[1])  # axes limited to size of dataset with no excess
+    ax[1].set_ylim(0, dataset_pixels[0])  # axes limited to size of dataset with no excess
+    ax[0].set_xlim(0, camera_pixels[0])  # axes size limits to number of pixels in camera
+    ax[0].set_ylim(0, camera_pixels[1])  # axes size limits to number of pixels in camera
+    plt.setp(ax[0], xticks=[], yticks=[])  # removes the tick marks from the diffraction pattern display
+    plt.setp(ax[1], xticks=[], yticks=[])
+
+
+
+
     # Make a horizontal slider to control the inner angle slider.
-    inner_allowed = np.arange(start=min_angle,stop=max_angle-1,step=1) #slider range is capped to integer number of pixels
+    #inner_allowed = np.arange(start=min_angle,stop=max_angle-1,step=1) #slider range is capped to integer number of pixels
     inner_mask_slider = fig.add_axes([0.1, 0.1, 0.5, 0.03]) #size of slider in plot
-    inner_mask_value = Slider(ax=inner_mask_slider,label='Inner angle',valmin=0,valstep=inner_allowed,valmax=inner_allowed[-1],valinit=20) #creates the slider
+    inner_mask_value = Slider(ax=inner_mask_slider,label='Inner angle',valmin=0,valmax=max_angle-1,valstep=1,valinit=20) #creates the slider
 
     # Make a vertically oriented slider to control the outer angle slider
-    outer_allowed = np.arange(start=min_angle+1,stop=max_angle,step=1) #slider range is capped to integer number of pixels
+    #outer_allowed = np.arange(start=min_angle+1,stop=max_angle,step=1) #slider range is capped to integer number of pixels
     outer_mask_slider = fig.add_axes([0.1, 0.25, 0.0225, 0.63]) #size of slider in plot
-    outer_mask_value = Slider(ax=outer_mask_slider,label="Outer angle",valmin=0,valmax=outer_allowed[-1],valstep=outer_allowed,valinit=100,orientation="vertical") #creates the slider
+    outer_mask_value = Slider(ax=outer_mask_slider,label="Outer angle",valmin=min_angle+1,valmax=max_angle,valstep=1,valinit=100,orientation="vertical") #creates the slider
 
     """Temporary"""
     diffraction = image_array[0][0]
@@ -346,7 +369,7 @@ def virtual_ADF(image_array,camera_size=None):
 
     generatebutton.on_clicked(generating)
     savebutton.on_clicked(save)
-
+    update(val=False)
 
     plt.show()
 
