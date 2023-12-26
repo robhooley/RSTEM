@@ -1,0 +1,9 @@
+expert-pi 
+easygui==0.98.3
+hyperspy==1.7.5
+natsort==8.4.0
+tqdm==4.65.0
+torch==2.1.1
+
+#serving-manager == 0.3.3
+#stem-measurements == 0.3.12
