@@ -195,9 +195,6 @@ def virtual_ADF(image_array,camera_size=None):
         ax[0].imshow(diffraction,cmap="gray")
 
     def update(val):
-        #add inner cirlce
-        #add outer circle
-
         ax[0].clear()
         put_diffraction(diffraction)
         outer_circle = Circle(xy=(256,256),radius=outer_mask_value.val,color="red",fill=None)
@@ -209,6 +206,7 @@ def virtual_ADF(image_array,camera_size=None):
         plt.setp(ax[0], xticks=[], yticks=[])  # removes the tick marks from the diffraction pattern display
         ax[1].set_title("Virtual ADF")  # Adds title to diffraction plot
         ax[0].set_title("Diffraction")  # adds title to navigation image
+        ax[0].invert_yaxis()
         fig.canvas.draw_idle() #stops the interactive plotting
 
     def reset(val):
@@ -262,23 +260,24 @@ def virtual_ADF(image_array,camera_size=None):
         ax[1].set_aspect(1)  # sets square aspect ratio for the plot
         ax[1].set_xlim(0, dataset_pixels[1])  # axes limited to size of dataset with no excess
         ax[1].set_ylim(0, dataset_pixels[0])  # axes limited to size of dataset with no excess
-        plt.setp(ax[0], xticks=[], yticks=[])  # removes the tick marks from the diffraction pattern display
+        plt.setp(ax[1], xticks=[], yticks=[])  # removes the tick marks from the VDF
+        plt.setp(ax[0], xticks=[], yticks=[])  # removes the tick marks from the VDF
         ax[1].imshow(generated_image, cmap="gray")
         fig.canvas.draw_idle()  # stops the interactive plotting
         return generated_image
 
     def save(val): #when the save button is clicked adds the DP and position to a list for saving in one go
         radii.append((inner_mask_value.val,outer_mask_value.val))
-        generated_image = generate_image(inner_mask_value.val,outer_mask_value.val)
-        VDF_list.append(generated_image) #saves the navigation image to a list #TODO can be removed
-        print("Adding to save list")
+        generated_image = generate_image(inner_mask_value.val,outer_mask_value.val) #recalculates the VDF
+        VDF_list.append(generated_image) #saves the VDF image to a list
+        print("Adding image to save list")
 
-    def save_list(radii,VDF_list): #TODO fix this
+    def save_list(radii,VDF_list): #TODO fix this and tidy up
         directory = g.diropenbox("Save directory","Save directory") #prompts users to select a folder to save into
         print("Saving data")
         for i in range(len(VDF_list)):
-            VDF = VDF_list[i] #gets the navigation image
-            radiuses = radii[i] #gets the XY position tuple
+            VDF = VDF_list[i] #gets the generated image
+            radiuses = radii[i] #gets the annulus masks
             inner_radius = radiuses[0]
             outer_radius = radiuses[1]
             fig,ax = plt.subplots(1) #builds a plot to annotate the navigation image
@@ -290,7 +289,7 @@ def virtual_ADF(image_array,camera_size=None):
             ax.add_patch(fill)
             ax.add_patch(outer)
 
-            ax.imshow(diffraction,cmap="gray") #adds the navigation image to the plot
+            ax.imshow(diffraction,cmap="gray") #adds the diffraction pattern to the plot
             plt.setp(ax, xticks=[], yticks=[]) #removes tick markers
 
             """handles the saving of the plot"""
@@ -315,7 +314,9 @@ def virtual_ADF(image_array,camera_size=None):
 
     # Define initial plotting space
     fig, ax = plt.subplots(1,2,figsize=(20,10)) #builds a figure with 2 subplots
-
+    fig.suptitle("Use the sliders to set VDF mask, Use generate button to make images"
+                 ", click the save button to add images to prepare images for saving"
+                 ", close the display to save all images")
     radii = []
     VDF_list = []
 
@@ -329,7 +330,7 @@ def virtual_ADF(image_array,camera_size=None):
 
     ax[1].set_title("Virtual ADF")  # Adds title to diffraction plot
     ax[0].set_title("Diffraction")  # adds title to navigation image
-    ax[1].imshow(initial_image,cmap="gray") #produces an image based off the initial slider values
+    ax[1].imshow(initial_image,cmap="gray")  # produces an image based off the initial slider values
     # adjust the main plot to make room for the sliders
     fig.subplots_adjust(left=0.25, bottom=0.25)
 
@@ -339,37 +340,37 @@ def virtual_ADF(image_array,camera_size=None):
     ax[1].set_ylim(0, dataset_pixels[0])  # axes limited to size of dataset with no excess
     ax[0].set_xlim(0, camera_pixels[0])  # axes size limits to number of pixels in camera
     ax[0].set_ylim(0, camera_pixels[1])  # axes size limits to number of pixels in camera
-    plt.setp(ax[0], xticks=[], yticks=[])  # removes the tick marks from the diffraction pattern display
-    plt.setp(ax[1], xticks=[], yticks=[])
+    plt.setp(ax[0], xticks=[], yticks=[])  # removes the tick marks from the diffraction display
+    plt.setp(ax[1], xticks=[], yticks=[])  # removes the tick marks from the VDF display
 
 
 
 
     # Make a horizontal slider to control the inner angle slider.
-    #inner_allowed = np.arange(start=min_angle,stop=max_angle-1,step=1) #slider range is capped to integer number of pixels
+
     inner_mask_slider = fig.add_axes([0.1, 0.1, 0.5, 0.03]) #size of slider in plot
     inner_mask_value = Slider(ax=inner_mask_slider,label='Inner angle',valmin=0,valmax=max_angle-1,valstep=1,valinit=20) #creates the slider
 
     # Make a vertically oriented slider to control the outer angle slider
-    #outer_allowed = np.arange(start=min_angle+1,stop=max_angle,step=1) #slider range is capped to integer number of pixels
+
     outer_mask_slider = fig.add_axes([0.1, 0.25, 0.0225, 0.63]) #size of slider in plot
     outer_mask_value = Slider(ax=outer_mask_slider,label="Outer angle",valmin=min_angle+1,valmax=max_angle,valstep=1,valinit=100,orientation="vertical") #creates the slider
 
     """Temporary"""
     diffraction = image_array[0][0]
     # register the update function with each slider
-    inner_mask_value.on_changed(update) #tracks the sliders to see if they have changed, if so, runs the update function
-    outer_mask_value.on_changed(update) #tracks the sliders to see if they have changed, if so, runs the update function
+    inner_mask_value.on_changed(update)  # tracks the sliders to see if they have changed, runs the update function
+    outer_mask_value.on_changed(update)  # tracks the sliders to see if they have changed, runs the update function
 
     # Create a `matplotlib.widgets.Button` to reset the sliders to initial values.
-    generate_images_axes_object = fig.add_axes([0.8, 0.025, 0.1, 0.04]) #adds a spot for the reset button
-    generatebutton = Button(generate_images_axes_object, 'Generate', hovercolor='0.975') #adds the reset button
-    save_image = fig.add_axes([0.2, 0.025, 0.1, 0.04]) #adds a spot for the save button
-    savebutton = Button(save_image, 'Save', hovercolor='0.975') #adds the save button
+    generate_images_axes_object = fig.add_axes([0.8, 0.025, 0.1, 0.04])  # adds a spot for the reset button
+    generatebutton = Button(generate_images_axes_object, 'Generate', hovercolor='0.975')  # adds the reset button
+    save_image = fig.add_axes([0.2, 0.025, 0.1, 0.04])  # adds a spot for the save button
+    savebutton = Button(save_image, 'Save', hovercolor='0.975')  # adds the save button
 
     generatebutton.on_clicked(generating)
     savebutton.on_clicked(save)
-    update(val=False)
+    update(val=False) #runs the update function
 
     plt.show()
 
