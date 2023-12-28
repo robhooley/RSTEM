@@ -61,20 +61,6 @@ def get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz):
     return microscope_info
 
 
-def set_and_make_directory(): # TODO this is a semi-functional mess
-    global save_location
-    directory = str(Path.home()) + ("\\Desktop\\ExpertPI data\\")  # path to a data folder on the desktop
-    now = datetime.now()  # time of data save process
-    todays_date = now.strftime("%d_%m_%Y")  # date as a string
-    date_and_time = now.strftime("%H_%M")  # time as a string
-    save_location = directory + str(todays_date)  # adds the date to the data folder
-    is_existing = os.path.exists(save_location)  # checks to see if there is an existing folder with this name and location
-    if not is_existing:  # if the folder is not present
-        os.makedirs(save_location)  # makes the folder
-        #os.makedirs(final_directory)  # makes a subfolder for the time of the acquisition
-    print("Save directory is", save_location)  # prints the save directory to the console
-    return save_location, date_and_time
-
 def create_circular_mask(h, w, center=None, radius=None):
 
     if center is None:  # use the middle of the image
@@ -447,15 +433,16 @@ def tiffs_to_array(scan_width):
 def tiffs_to_array(scan_width):
     directory = g.diropenbox("Select directory","Select Directory")
     print(directory)
-    something = os.listdir(directory)
-    list = []
-    for file in tqdm(something):
-        #print(file)
+    folder = os.listdir(directory)
+    image_list = []
+    for file in tqdm(folder):
         path = directory+"\\"+file
         image = cv2.imread(path,-1)
-        list.append(image)
+        image_list.append(image)
 
-    return list
+    array = np.asarray(image_list)
+    reshaped_array = np.reshape(array,(scan_width,scan_width))
+    return reshaped_array
 
 
 #array = tiffs_to_array(256)

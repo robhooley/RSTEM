@@ -9,13 +9,8 @@ from matplotlib import patches, gridspec
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from PIL import Image
-import pickle as p
 import easygui as g
 import cv2 as cv2
-import glob
-from datetime import datetime
-import os
 import time
 from time import sleep
 from statistics import mean
@@ -24,10 +19,6 @@ from skimage.transform import radon
 from skimage import exposure
 from pathlib import Path
 from math import ceil
-from expert_pi import grpc_client
-from expert_pi.controllers import scan_helper
-from expert_pi.stream_clients import cache_client
-from expert_pi.grpc_client.modules._common import DetectorType as DT
 from matplotlib.path import Path as matpath
 import matplotlib.colors as mcolors
 
@@ -183,10 +174,6 @@ def dataviewer_4D(dataset,background_image=None):
     plt.show()
     if len(dp_save_list) != 0: #if the save button has been pressed
         save_list(dp_save_list,position_save_list,VBF_save_list) #save the data to disk
-
-
-#image = cv2.imread("C:\\Users\\robert.hooley\\Desktop\\Coding\\dataviewer test\\VDF.TIFF")
-#dataviewer_4D(dataset)
 
 
 def virtual_ADF(image_array,camera_size=None):
