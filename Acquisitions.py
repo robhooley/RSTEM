@@ -1,5 +1,5 @@
 
-from expert_pi import grpc_client
+from .expert_pi import grpc_client
 from expert_pi.controllers import scan_helper
 from expert_pi.stream_clients import cache_client
 from expert_pi.grpc_client.modules._common import DetectorType as DT
@@ -15,7 +15,10 @@ def drift_corrected_imaging(num_frames, output="Summed",shift_method="ML",num_pi
 
     pixel_time = window.scanning.pixel_time_spin.value()/1e3  # gets in us and convert to ns
     print("Pixel time",pixel_time,"ns")
-    num_frames = num_frames
+    fov = grpc_client.scanning.get_field_width() #in meters
+    fov = fov*1e-6
+    print("Field of View in um",fov)
+
 
     if num_pixels == None:
         num_pixels = 1024
@@ -37,7 +40,7 @@ def drift_corrected_imaging(num_frames, output="Summed",shift_method="ML",num_pi
     image_offsets.append(initial_shift)
 
     shift_method = shift_measurements.Method.PatchesPass2
-    fov = grpc_client.scanning.get_field_width()
+
     for frame in range(len(num_frames)):
         print("Acquiring frame",frame,"of",num_frames)
         scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
