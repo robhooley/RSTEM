@@ -40,8 +40,11 @@ def drift_corrected_imaging(num_frames, output="Summed",shift_method="ML",num_pi
     ADF_images_list.append(initial_ADF_image)
     image_offsets.append(initial_shift)
 
-    #TODO check other shift measurement methods
-    shift_method = shift_measurements.Method.PatchesPass2
+    #TODO check other shift measurement methods and add them properly
+    if shift_method == "ML":
+        shift_method = shift_measurements.Method.PatchesPass2
+    elif shift_method =="patches":
+        shift_method = shift_measurements.Method.PatchesPass2
 
     for frame in range(len(num_frames)):
         print("Acquiring frame",frame,"of",num_frames)
