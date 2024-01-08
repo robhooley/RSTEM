@@ -4,7 +4,7 @@ from expert_pi.controllers import scan_helper
 from expert_pi.stream_clients import cache_client
 from expert_pi.grpc_client.modules._common import DetectorType as DT
 import numpy as np
-
+from critical_dose_measurements import get_ui_dose_values
 def drift_corrected_imaging(num_frames, output="Summed",shift_method="ML",num_pixels=None):
 
     scan_rotation=0 #TODO is this scan rotation part really needed?
@@ -20,6 +20,7 @@ def drift_corrected_imaging(num_frames, output="Summed",shift_method="ML",num_pi
     print("Field of View in um",fov)
 
     #TODO add in option to calulcate series dose?
+    dose_values_pixel,dose_values_probe  = get_ui_dose_values()
 
     if num_pixels == None:
         num_pixels = 1024

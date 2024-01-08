@@ -202,7 +202,7 @@ def get_number_of_nav_pixels(): #checked ok
     pixels = int(scan_field_pixels.replace(" px", ""))
     return pixels
 
-def get_ui_dose_values(): # functional but maybe shit?
+def get_ui_dose_values(): # functional but maybe could be a lot better?
     illumination_parameters = grpc_client.illumination.get_spot_size()
     probe_current = illumination_parameters["current"]
 
