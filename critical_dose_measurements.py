@@ -15,11 +15,11 @@ import pandas as pd
 from collections import Counter
 
 from bisect import bisect_left
-#from PySide6 import QtWidgets, QtGui, QtCore
 
-from .widgets import toolbars, toolbar_manager, main_area
-from .widgets.views import image_view, diffraction_view, spectrum_view, histogram, view_with_histogram
-from expert_pi import stream_clients, grpc_client, scan_helper
+from expert_pi import grpc_client
+from expert_pi.stream_clients import cache_client
+from expert_pi.controllers import scan_helper
+from expert_pi.grpc_client.modules._common import DetectorType as DT
 #import json
 
 def closest_coord(coord,coord_list):
@@ -176,15 +176,15 @@ def get_spot_intensities(template_spots,image,integration_mask_radius):
     return spot_intensities
 
 def acquire_datapoint(N,pixel_time,output="sum"): #checked ok
-    scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=N, frames=1,
+    scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=N, frames=1, #run acquisition
                                                detectors=[DT.Camera])
-    header, data = cache_client.get_item(scan_id, N**2)
-    shape4D = (header['scanDimensions'][1], header['scanDimensions'][2], data['cameraData'].shape[1], data['cameraData'].shape[2])
+    header, data = cache_client.get_item(scan_id, N**2) #retrieve dataset
+    shape4D = (header['scanDimensions'][1], header['scanDimensions'][2], data['cameraData'].shape[1], data['cameraData'].shape[2]) #defines shape of 4D acquisition
     camera_data = data['cameraData'].reshape(shape4D)
     if output == "sum":
-        output_data = np.sum(camera_data,(0,1),dtype=np.float32)
+        output_data = np.sum(camera_data,(0,1),dtype=np.float32) #sums 4D acquisition to single diffraction pattern
     if output == "individual":
-        output_data = camera_data
+        output_data = camera_data #gives an array where shape is shape4D (scanX,scanY,cameraX,cameraY)
 
     return output_data
 
@@ -198,30 +198,55 @@ def beam_size_matched_acquisition(camera_FPS=4500,pixels=32): #checked ok
     return matched_sampling_fov,diffraction_pattern
 
 def get_number_of_nav_pixels(): #checked ok
-    scan_field_pixels = window.scanning.size_combo.currentText()
-    pixels = int(scan_field_pixels.replace(" px", ""))
+    scan_field_pixels = window.scanning.size_combo.currentText() #gets the string of number of pixels from the UI (messy)
+    pixels = int(scan_field_pixels.replace(" px", "")) #replaces the px with nothing and converts to an integer
     return pixels
 
-def get_ui_dose_values(): # functional but maybe could be a lot better?
+def get_ui_dose_values(units="nm"): # TODO check on live instrument
     illumination_parameters = grpc_client.illumination.get_spot_size()
-    probe_current = illumination_parameters["current"]
+    probe_current = illumination_parameters["current"] #in amps
 
-    convergence_semiangle = illumination_parameters["angle"]
     dwell_time = window.scanning.pixel_time_spin.value() #always in us from expi window
     electrons_per_amp = 6.28e18
-    electrons_in_probe = electrons_per_amp*probe_current
-    electrons_per_pixel_dwell = electrons_in_probe*(dwell_time/1e6)
+    electrons_in_probe = electrons_per_amp*probe_current #electrons in probe per second
+    electrons_per_pixel_dwell = electrons_in_probe*(dwell_time/1e6) #divide by dwell time in seconds
 
     """pixel size calculation"""
-    initial_fov = grpc_client.scanning.get_field_width()
-    initial_pixels = get_number_of_nav_pixels()
-    pixel_size = initial_fov/initial_pixels #in meters
+    scan_fov = grpc_client.scanning.get_field_width()
+    num_pixels = get_number_of_nav_pixels()
+    pixel_size = scan_fov/num_pixels #in meters
     pixel_area = pixel_size**2
-    electrons_per_meter_square_pixel_calc = electrons_per_pixel_dwell/pixel_area
+    electrons_per_meter_square_pixel = electrons_per_pixel_dwell/pixel_area
 
     """probe size calculation"""
-    smallest_spot_size = illumination_parameters["d50"]
-    probe_area = smallest_spot_size**2
-    electrons_per_meter_square_probe_calc = electrons_per_pixel_dwell/probe_area
+    probe_size = illumination_parameters["d50"] #in meters
+    probe_area = np.pi*(probe_size/2)**2 #assume circular probe
+    electrons_per_meter_square_probe = electrons_per_pixel_dwell/probe_area
 
-    return electrons_per_meter_square_pixel_calc,electrons_per_meter_square_probe_calc
+    """Calculate pixel size to probe size ratio"""
+    pixel_to_probe_ratio = pixel_size/probe_size
+    print(pixel_to_probe_ratio)
+    if pixel_to_probe_ratio > 1:
+        print(f"Pixel size is {pixel_to_probe_ratio} times larger than probe size, undersampling conditions")
+    else:
+        print(f"Probe size is {pixel_to_probe_ratio} times larger than probe size, oversampling conditions")
+
+    if units == "nm":
+        pixel_dose = electrons_per_meter_square_pixel*1e-18
+        probe_dose = electrons_per_meter_square_probe*1e-18
+
+    elif units == "m":
+        pixel_dose = electrons_per_meter_square_pixel
+        probe_dose = electrons_per_meter_square_probe
+
+    elif units == "A" or "angstrom" or "Angstrom":
+        pixel_dose = electrons_per_meter_square_pixel*1e-20
+        probe_dose = electrons_per_meter_square_probe*1e-20
+
+    dose_unit = f"e-{units}-2"
+
+    dose_values = {"pixel dose":pixel_dose, #dictionary of values
+                    "probe dose":probe_dose,
+                   "dose units":dose_unit}
+
+    return dose_values #returns dose values and the unit

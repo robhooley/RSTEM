@@ -25,9 +25,10 @@ import matplotlib.colors as mcolors
 from matplotlib.widgets import Button, Slider
 
 #TODO refactor background image to navigation image
+#TODO clean up imports
+#TODO consider having acquisition module and separate analysis module
 
-dataset = np.load("C:\\Users\\robert.hooley\\Desktop\\Coding\\dataset.npy")
-
+dataset = np.load("C:\\Users\\robert.hooley\\Desktop\\HR_4D_STEM.npy")
 
 def dataviewer_4D(dataset,background_image=None):
     def spot_marker(xposition, yposition): #sets the spot position in the virtual image
@@ -196,10 +197,6 @@ def virtual_ADF(image_array,camera_size=None):
         ax[0].invert_yaxis()
         fig.canvas.draw_idle() #stops the interactive plotting
 
-    def reset(val):
-        xposition.reset() #if the reset command is sent, send the sliders back to the start point
-        yposition.reset() #if the reset command is sent, send the sliders back to the start point
-
     def set_axes(generated_image):
         ax[0].set_aspect(1) #sets square aspect ratio for the plot
         ax[1].set_aspect(1) #sets square aspect ratio for the plot
@@ -363,8 +360,5 @@ def virtual_ADF(image_array,camera_size=None):
 
     if len(VDF_list) != 0: #if the save button has been pressed
         save_list(radii,VDF_list) #save the data to disk
-
-
-
 
 virtual_ADF(dataset)
