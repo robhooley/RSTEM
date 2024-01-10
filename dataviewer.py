@@ -30,7 +30,7 @@ from matplotlib.widgets import Button, Slider
 
 dataset = np.load("C:\\Users\\robert.hooley\\Desktop\\HR_4D_STEM.npy")
 
-def dataviewer_4D(dataset,background_image=None):
+def dataviewer_4D(data_array,background_image=None): #TODO refactor to image array not dataset
     def spot_marker(xposition, yposition): #sets the spot position in the virtual image
         ax[0].scatter(int(yposition.val), int(xposition.val),marker="+",c="red") #adds a red cross at user selected XY
 
@@ -118,6 +118,16 @@ def dataviewer_4D(dataset,background_image=None):
 
             #print("time for savefig processing without diffraction", savefig_time)
 
+    if type(data_array) is tuple: #checks for metadata dictionary
+        image_array = data_array[0]
+        metadata = data_array[0]
+        print("Metadata exists")
+    else:
+        image_array = data_array
+        metadata=None
+        print("Metadata not present")
+    #dataset = data_array[0]  # TODO confirm this works
+    #metadata = data_array[1]  # TODO confirm this works
 
     dataset_shape = dataset.shape #gets the shape of the incoming dataset array
     dataset_pixels = dataset_shape[0],dataset_shape[1] #works out scanning pixels
@@ -177,7 +187,7 @@ def dataviewer_4D(dataset,background_image=None):
         save_list(dp_save_list,position_save_list,VBF_save_list) #save the data to disk
 
 
-def virtual_ADF(image_array,camera_size=None):
+def virtual_ADF(data_array,camera_size=None):
 
     def put_diffraction(diffraction):
         ax[0].imshow(diffraction,cmap="gray")
@@ -287,6 +297,16 @@ def virtual_ADF(image_array,camera_size=None):
             #ax.invert_yaxis()
             plt.savefig(filename_VDF,bbox_inches='tight',pad_inches = 0)
             cv2.imwrite(filename_VDF,VDF.astype(np.uint16))
+    if type(data_array) is tuple: #checks for metadata dictionary
+        image_array = data_array[0]
+        metadata = data_array[0]
+        print("Metadata exists")
+    else:
+        image_array = data_array
+        metadata=None
+        print("Metadata not present")
+    #image_array = data_array[0]  # TODO confirm this works
+    #metadata = data_array[1]  # TODO confirm this works
 
     max_angle = math.hypot(256,256)
     min_angle = 0
