@@ -23,10 +23,10 @@ from skimage import exposure
 from pathlib import Path
 from math import ceil
 
-from expert_pi import grpc_client
-from expert_pi.controllers import scan_helper
-from expert_pi.stream_clients import cache_client
-from expert_pi.grpc_client.modules._common import DetectorType as DT
+#from expert_pi import grpc_client
+#from expert_pi.controllers import scan_helper
+#from expert_pi.stream_clients import cache_client
+#from expert_pi.grpc_client.modules._common import DetectorType as DT
 from matplotlib.path import Path as matpath
 import matplotlib.colors as mcolors
 
@@ -79,9 +79,8 @@ def create_circular_mask(image_height, image_width, mask_center_coordinates=None
         index_list.append(index)
     return index_list"""
 
-
-def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True,save_as=None): #refactored but partially functional on F4
-    #TODO add in metadata and add to tuple in image array variable
+#TODO more comments
+def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True,save_as=None):
     """Parameters
     scan width: pixels
     camera_frequency: camera speed in frames per second up to 72000
@@ -94,7 +93,7 @@ def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True
         grpc_client.stem_detector.set_is_inserted(DT.HAADF, False)
         print("Stabilising after detector retraction")
         sleep(5)
-    grpc_client.scanning.set_precession_frequency(72000)
+    #grpc_client.scanning.set_precession_frequency(72000) TODO check if needed
     grpc_client.projection.set_is_off_axis_stem_enabled(False) #puts the beam back on the camera
     sleep(0.2)  # stabilization
     scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(1/camera_frequency_hz, 8), total_size=scan_width_px, frames=1, detectors=[DT.Camera], is_precession_enabled=use_precession)
@@ -150,10 +149,12 @@ def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True
     return (image_array,metadata)
 
 
-
+#TODO add comments to this function
+#TODO use metadata for scalebar, maybe common function for all measurements
+#TODO docstrings
 def selected_area_diffraction(data_array):
 
-    if type(data_array) is tuple: #checks for metadata dictionary
+    if type(data_array) is tuple: #checks for metadata dictionary #TODO Checked ok with and without metadata
         image_array = data_array[0]
         metadata = data_array[0]
         print("Metadata exists")
@@ -162,16 +163,14 @@ def selected_area_diffraction(data_array):
         metadata=None
         print("Metadata not present")
 
-    camera_data_shape = image_array[0][0].shape #shape of first image to get image dimensions almost always 512x512
-    print("Cam data shape",camera_data_shape)
+    camera_data_shape = image_array[0][0].shape #shape of first image to get image dimensions
     dataset_shape = image_array.shape[0],image_array.shape[1] #scanned region shape
-    print("dataset shape",dataset_shape)
     radius = 30  # pixels
     VBF_intensity_list = []
     integration_mask = create_circular_mask(camera_data_shape[0], camera_data_shape[1], mask_radius=radius)
-    for j in image_array:
-        for k in j:
-            VBF_intensity = np.sum(k[integration_mask])  # measures the intensity in the masked image - for zero order determination
+    for row in image_array:
+        for pixel in row:
+            VBF_intensity = np.sum(pixel[integration_mask])  # measures the intensity in the masked image
             VBF_intensity_list.append(VBF_intensity)
 
     VBF_intensity_array = np.asarray(VBF_intensity_list)
@@ -202,13 +201,10 @@ def selected_area_diffraction(data_array):
             inside_pixels.append(pixel)
 
     number_of_summed_patterns = len(inside_pixels)
-    print(number_of_summed_patterns,"patterns summed together")
-
     fig,(ax1,ax2) = plt.subplots(1,2)
     ax1.title.set_text("Integration region")
     ax1.add_patch(polygon)
-    ax1.imshow(VBF_intensity_list)
-
+    ax1.imshow(VBF_intensity_array)
 
     subset_DP_list = []
     for pixel in inside_pixels:
@@ -220,9 +216,6 @@ def selected_area_diffraction(data_array):
 
     zero_excluded_average = int(np.average(subset_summed_DP[~integration_mask]))
     zero_excluded_max = max(subset_summed_DP[~integration_mask])
-    print("max intensity outside of zero order disk",zero_excluded_max)
-    print("average outside of zero order disk",zero_excluded_average)
-
 
     ax2.imshow(subset_summed_DP,vmin=0,vmax=zero_excluded_max)
     ax2.title.set_text(("Summed diffraction pattern from",number_of_summed_patterns,"patterns"))
@@ -255,8 +248,9 @@ def multi_VDF(data_array,radius=10):
         Summed diffraction pattern taken from all pixels
         List of Virtual Dark Field images
      """
+    #TODO do we want to try matching spot radius to the convergence angle?
 
-    if type(data_array) is tuple: #checks for metadata dictionary #TODO test this
+    if type(data_array) is tuple: #checks for metadata dictionary #TODO works ok with and without metadata
         image_array = data_array[0]
         metadata = data_array[0]
         print("Metadata exists")
@@ -401,27 +395,28 @@ def save_data(data_array,format=None):
     if format == "All images as TIFFs":
         print("Saving",shape_4D[0]*shape_4D[1],"files as .TIFF")
         i = 0
-        #if camera_frequency_hz>=2250: #faster than 2250 FPS, dectris camera only produces 8 bit images
-        #    data_type = np.uint8
-        #else:
-        #    data_type = np.uint16 #if slower than 2250 FPS, camera can produce 16 bit images
         for row in image_array:
             print("Saving row",row,"of",shape_4D[0])
             for image in row:
-                #image.astype(data_type) # sets data type based on camera speed
                 filename = f"{directory}\\4D_stem_{i:06}.tiff" #increments the number of the frame
                 cv2.imwrite(filename, image) #writes the frame
                 i += 1 #increases the number for the next frame
         print("Saving complete") #status update
     elif format == "Numpy array":
-        print("Saving to numpy array")
+        print(f"Saving to numpy array, {filename}.npy")
         np.save(filename, image_array)
         print("Saving complete")
     elif format == "Pickle":
-        print("saving as Pickle")
+        print(f"saving as Pickle {filename}.pdat file")
         with open (f"{filename}.pdat","wb")as f:
             p.dump(image_array,f)
         print("Pickling complete")
+    if metadata is not None:
+        open_json = open(filename,"w")
+        json.dump(metadata,filename)
+        open_json.close()
+
+
 
 
 
@@ -430,6 +425,15 @@ def import_tiff_series(scan_width=None):
     directory = g.diropenbox("Select directory","Select Directory")
     if scan_width==None: #if scan width variable is empty, prompt user to enter it
         scan_width=g.integerbox("Enter scan width in pixels","Enter scan width in pixels")
+
+    load_metadata = g.ynbox("Do you want to load the metadata file?","Do you want to load the metadata file")
+    if load_metadata == False:
+        metadata=None
+    if load_metadata == True:
+        metadata_path = g.fileopenbox("Select metadata file","Select metadata file")
+        loading_container = open(metadata_path,"r")
+        metadata = json.load(loading_container)
+
     folder = os.listdir(directory) #formats the directory into proper syntax
     image_list = [] #opens empty list
     for file in tqdm(folder): #iterates through folder with a progress bar
@@ -439,9 +443,19 @@ def import_tiff_series(scan_width=None):
 
     array = np.asarray(image_list) #converts the list to an array
     reshaped_array = np.reshape(array,(scan_width,scan_width)) #reshapes the array to 4D dataset shape
-    metadata=None
-    return (reshaped_array,metadata)
+    if load_metadata == False:
+        return reshaped_array
+    else:
+        return (reshaped_array,metadata)
 
-#dataset = np.load("C:\\Users\\robert.hooley\\Desktop\\Coding\\4D-STEM_18_12_2023 15_31.npy")
-#
-#buffer,sum,df = multi_VDF(dataset)
+
+#with open("C:\\Users\\robert.hooley\\Desktop\\Coding\\dataset_with_metadata.pdat","rb") as f:
+#    dataset = p.load(f)
+
+#print(dataset)
+
+dataset_no_metadata = np.load("C:\\Users\\robert.hooley\\Desktop\\Coding\\4D-STEM_18_12_2023 15_31.npy")
+
+buffer,summed,df = multi_VDF(dataset_no_metadata)
+
+a,b,c = selected_area_diffraction(dataset_no_metadata)
