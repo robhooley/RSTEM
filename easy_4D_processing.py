@@ -28,15 +28,43 @@ from math import ceil
 #from expert_pi.stream_clients import cache_client
 #from expert_pi.grpc_client.modules._common import DetectorType as DT
 from matplotlib.path import Path as matpath
+import fnmatch
 import matplotlib.colors as mcolors
 
 #TODO - add comments throughout
 #TODO clean up code and imports
-#TODO check imports for non-standard dependancies - easygui etc
-#TODO test refactored scan_4D_basic on microscope
 
+
+
+def spot_radius_in_px(data_array):
+    """Takes a data array and works out the diffraction spot radius in pixels from the metadata"""
+    if type(data_array) is tuple: #checks for metadata dictionary #TODO Checked ok with and without metadata
+        image_array = data_array[0] #splits the tuple to image array and metadata dictionary
+        metadata = data_array[0] #splits the tuple to image array and metadata dictionary
+        dp_shape = image_array[0][0].shape #shape of first
+        print("Metadata exists")
+
+    else:
+        image_array = data_array #if dataset is not a tuple, only image data is present
+        metadata=None #so there it no metadata
+        print("Metadata not present")
+
+    if metadata is not None: # TODO
+        convergence_semiangle = metadata["convergence angle mrad"]
+        diffraction_angle = metadata["diffraction s ize in mrad"] #TODO check if total or half angle
+        mrad_per_pixel = diffraction_angle/dp_shape[0]
+        convergence_pixels = convergence_semiangle/mrad_per_pixel
+        radius = convergence_pixels #semi-angle and radius
+
+    return radius
 
 def get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz):
+    """Extracts acquisition conditions from the microscope and stores them in a dictionary
+    Parameters:
+    scan_width_px: the number of pixels in the x axis
+    use_precession: True or False
+    camera_frequency_hz: The camera acquisition rate in FPS or Hz
+    """
     fov = grpc_client.scanning.get_field_width() #get the current scanning FOV
     pixel_size_nm = fov*1e3/scan_width_px #work out the pixel size in nanometers
     time_now = datetime.now()
@@ -57,16 +85,13 @@ def get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz):
     return microscope_info
 
 
-def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None):
-
+def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None): #todo move to utilities file
     if mask_center_coordinates is None:  # use the middle of the image
         mask_center_coordinates = (int(image_width/2), int(image_height/2))
     if mask_radius is None:  # use the smallest distance between the center and image walls
         mask_radius = min(mask_center_coordinates[0], mask_center_coordinates[1], image_width - mask_center_coordinates[0], image_height - mask_center_coordinates[1])
-
     Y, X = np.ogrid[:image_height, :image_width]
     dist_from_center = np.sqrt((X - mask_center_coordinates[0])**2 + (Y - mask_center_coordinates[1])**2)
-
     mask = dist_from_center <= mask_radius
     return mask
 
@@ -80,13 +105,12 @@ def create_circular_mask(image_height, image_width, mask_center_coordinates=None
     return index_list"""
 
 #TODO more comments
-def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True,save_as=None):
+def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True):
     """Parameters
     scan width: pixels
     camera_frequency: camera speed in frames per second up to 72000
     use_precession: True or False
-    save_as : "None" does not save and keeps the data in RAM,"TIFF" saves a folder full of TIFFs,
-    "NPY","Pickle" """
+    """
 
     if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(DT.HAADF) == True:
         grpc_client.stem_detector.set_is_inserted(DT.BF,False)
@@ -248,7 +272,6 @@ def multi_VDF(data_array,radius=10):
         Summed diffraction pattern taken from all pixels
         List of Virtual Dark Field images
      """
-    #TODO do we want to try matching spot radius to the convergence angle?
 
     if type(data_array) is tuple: #checks for metadata dictionary #TODO works ok with and without metadata
         image_array = data_array[0]
@@ -393,7 +416,7 @@ def save_data(data_array,format=None):
 
     shape_4D = image_array.shape
     if format == "All images as TIFFs":
-        print("Saving",shape_4D[0]*shape_4D[1],"files as .TIFF")
+        print("Saving",shape_4D[0]*shape_4D[1],"files as .tiff")
         i = 0
         for row in image_array:
             print("Saving row",row,"of",shape_4D[0])
@@ -423,10 +446,12 @@ def save_data(data_array,format=None):
 def import_tiff_series(scan_width=None):
     """Loads in a folder of TIFFs and creates a 4D-array for use with other functions"""
     directory = g.diropenbox("Select directory","Select Directory")
-    if scan_width==None: #if scan width variable is empty, prompt user to enter it
-        scan_width=g.integerbox("Enter scan width in pixels","Enter scan width in pixels")
+    if scan_width is None: #if scan width variable is empty, prompt user to enter it
+        num_files = len(fnmatch.filter(os.listdir(directory), '*.tiff')) #counts how many .tiff files are in the directory
+        guessed_scan_width = int(np.sqrt(num_files)) #assumes it is a square acquisition
+        scan_width=g.integerbox("Enter scan width in pixels","Enter scan width in pixels",default=guessed_scan_width)
 
-    load_metadata = g.ynbox("Do you want to load the metadata file?","Do you want to load the metadata file")
+    load_metadata = g.ynbox("Do you want to load the metadata .JSON file?","Do you want to load the metadata .JSON file")
     if load_metadata == False:
         metadata=None
     if load_metadata == True:
