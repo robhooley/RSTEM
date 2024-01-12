@@ -318,7 +318,7 @@ def multi_VDF(data_array,radius=10):
         DF_output = np.reshape(DF_output,(dataset_shape)) #reshapes the DF intensities to the scan dimensions
         DF_images.append(DF_output)
 
-    if len(mask_list) ==1:
+    if len(mask_list) ==1: #TODO make this less messy
         grid_rows,grid_cols=1,2 #1x2 plot for 1 mask
     elif len(mask_list) ==2:
         grid_rows, grid_cols = 1, 3 #1x3 plot for 2 masks +1DP
@@ -479,8 +479,8 @@ def import_tiff_series(scan_width=None):
 
 #print(dataset)
 
-dataset_no_metadata = np.load("C:\\Users\\robert.hooley\\Desktop\\Coding\\4D-STEM_18_12_2023 15_31.npy")
+#dataset_no_metadata = np.load("C:\\Users\\robert.hooley\\Desktop\\Coding\\4D-STEM_18_12_2023 15_31.npy")
 
-buffer,summed,df = multi_VDF(dataset_no_metadata)
+#buffer,summed,df = multi_VDF(dataset_no_metadata)
 
-a,b,c = selected_area_diffraction(dataset_no_metadata)
+#a,b,c = selected_area_diffraction(dataset_no_metadata)
