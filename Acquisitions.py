@@ -1,6 +1,3 @@
-#%thread
-
-#import expert_pi
 from expert_pi.__main__ import window
 from expert_pi import grpc_client
 from expert_pi.controllers import scan_helper
@@ -8,8 +5,19 @@ from expert_pi.stream_clients import cache_client
 from expert_pi.grpc_client.modules._common import DetectorType as DT
 from stem_measurements import shift_measurements
 import numpy as np
+import cv2 as cv2
+
+#from serving_manager.api import registration_model
+#from serving_manager.api import super_resolution_model
+#from serving_manager.api import TorchserveRestManager
 
 
+
+#registration_model(image, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
+#super_resolution_model(image=image, model_name='SwinIRImageDenoiser', host='172.19.1.16', port='7447') #for denoising
+#manager = TorchserveRestManager(inference_port='8600', management_port='8081', host='172.19.1.16', image_encoder='.png')
+#manager.infer(image=image, model_name='spot_segmentation')
+#manager.list_models()
 
 def drift_corrected_imaging(num_frames, series_output=False,shift_method="patches",num_pixels=None):
     #%thread

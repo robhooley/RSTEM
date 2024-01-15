@@ -34,7 +34,7 @@ import matplotlib.colors as mcolors
 #TODO - add comments throughout
 #TODO clean up code and imports
 
-
+#TODO make utilities file for useful tools
 
 def spot_radius_in_px(data_array):
     """Takes a data array and works out the diffraction spot radius in pixels from the metadata"""
@@ -51,7 +51,7 @@ def spot_radius_in_px(data_array):
 
     if metadata is not None: # TODO
         convergence_semiangle = metadata["convergence angle mrad"]
-        diffraction_angle = metadata["diffraction s ize in mrad"] #TODO check if total or half angle
+        diffraction_angle = metadata["diffraction size in mrad"] #TODO check if total or half angle
         mrad_per_pixel = diffraction_angle/dp_shape[0]
         convergence_pixels = convergence_semiangle/mrad_per_pixel
         radius = convergence_pixels #semi-angle and radius
@@ -472,7 +472,6 @@ def import_tiff_series(scan_width=None):
         return reshaped_array
     else:
         return (reshaped_array,metadata)
-
 
 #with open("C:\\Users\\robert.hooley\\Desktop\\Coding\\dataset_with_metadata.pdat","rb") as f:
 #    dataset = p.load(f)
