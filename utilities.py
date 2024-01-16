@@ -1,5 +1,7 @@
 import numpy as np
 from datetime import datetime
+from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+import matplotlib.font_manager as fm
 
 #from expert_pi import grpc_client
 #from expert_pi.controllers import scan_helper
@@ -111,3 +113,19 @@ def get_ui_dose_values(units="nm"): # TODO check on live instrument
                    "dose units":dose_unit}
 
     return dose_values #returns dose values and the unit
+
+import matplotlib.transforms as tfrms
+
+def create_scalebar(ax,scalebar_size_pixels,metadata):
+    print(scalebar_size_pixels,"scalebar requested in pixels")
+    pixel_size = metadata["pixel size nm"]*1e6
+    scalebar_nm = int(scalebar_size_pixels*pixel_size)
+    print("scalebar in nanometers",scalebar_nm)
+    fontprops = fm.FontProperties(size=18)
+    scalebar = AnchoredSizeBar(ax.transData,
+                        scalebar_nm,f"{scalebar_nm}nm", 'lower right',
+                           color='white',
+                           frameon=False,
+                           fontproperties=fontprops)
+
+    ax.add_artist(scalebar)

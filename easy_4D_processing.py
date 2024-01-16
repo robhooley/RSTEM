@@ -1,40 +1,30 @@
-#%%threaded
 import numpy as np
 import matplotlib.pyplot as plt
 import json
-from matplotlib.pyplot import Circle
 from matplotlib import patches, gridspec
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
-from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from PIL import Image
 import pickle as p
 import easygui as g
 import cv2 as cv2
-import glob
 from datetime import datetime
 import os
-import time
 from time import sleep
-from statistics import mean
 from tqdm import tqdm
-from skimage.transform import radon
-from skimage import exposure
-from pathlib import Path
-from math import ceil
-
+from matplotlib.path import Path as matpath
+import fnmatch
+import matplotlib.colors as mcolors
+from matplotlib import transforms as tf
 #from expert_pi import grpc_client
 #from expert_pi.controllers import scan_helper
 #from expert_pi.stream_clients import cache_client
 #from expert_pi.grpc_client.modules._common import DetectorType as DT
-from matplotlib.path import Path as matpath
-import fnmatch
-import matplotlib.colors as mcolors
 
-from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px
+
+from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar #utilities file in RSTEM directory
 
 #TODO - add comments throughout
-#TODO clean up code and imports
+#TODO consider changing data array to tuple even if metadata is missing, check for data type based on tuple length not type
 
 def get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz):
     """Extracts acquisition conditions from the microscope and stores them in a dictionary
@@ -62,7 +52,6 @@ def get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz):
         microscope_info["Precession Frequency in HZ"] = grpc_client.scanning.get_precession_frequency()
     return microscope_info
 
-#TODO more comments
 def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True):
     """Parameters
     scan width: pixels
@@ -71,75 +60,47 @@ def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True
     """
 
     if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(DT.HAADF) == True:
-        grpc_client.stem_detector.set_is_inserted(DT.BF,False)
-        grpc_client.stem_detector.set_is_inserted(DT.HAADF, False)
+        grpc_client.stem_detector.set_is_inserted(DT.BF,False) #retract BF detector
+        grpc_client.stem_detector.set_is_inserted(DT.HAADF, False) #retract ADF detector
         print("Stabilising after detector retraction")
-        sleep(5)
+        sleep(5) #wait for 5 seconds
     #grpc_client.scanning.set_precession_frequency(72000) TODO check if needed
-    grpc_client.projection.set_is_off_axis_stem_enabled(False) #puts the beam back on the camera
+    grpc_client.projection.set_is_off_axis_stem_enabled(False) #puts the beam back on the camera if in off-axis mode
     sleep(0.2)  # stabilization
     scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(1/camera_frequency_hz, 8), total_size=scan_width_px, frames=1, detectors=[DT.Camera], is_precession_enabled=use_precession)
     print("Acquiring",scan_width_px,"x",scan_width_px,"px dataset at",camera_frequency_hz,"frames per second")
-    image_list = []
+    image_list = [] #empty list to take diffraction data
     for i in range(scan_width_px): #retrives data one scan row at a time to avoid crashes
         print("getting data", i, "/", scan_width_px)
         header, data = cache_client.get_item(scan_id, scan_width_px)  # cache retrieval in rows
-        camera_size = data["cameraData"].shape[1],data["cameraData"].shape[2]
-        for j in range(scan_width_px):
-            image_data = data["cameraData"][j]
-            image_data = np.asarray(image_data)
+        camera_size = data["cameraData"].shape[1],data["cameraData"].shape[2] #gets shape of diffraction patterns
+        for j in range(scan_width_px): #for each pixel in that row
+            image_data = data["cameraData"][j] #take the data for that pixel
+            image_data = np.asarray(image_data) #convers to numpy array
             image_data = np.reshape(image_data,camera_size) #reshapes data to an individual image
-            image_list.append(image_data)
+            image_list.append(image_data) #adds it to the list of images
 
-    metadata = get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz)
+    metadata = get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz) #gets the microscope and acquisition metadata
 
-    print("reshaping array")
+    print("reshaping array") #reshaping the array to match the 4D STEM acquisition
     image_array = np.asarray(image_list) #converts the image list to an array
     image_array = np.reshape(image_array, (scan_width_px, scan_width_px, camera_size[0], camera_size[1])) #reshapes the array to match the acquisition
     print("Array reshaped")
-    """    if save_as == None:
-        print("Image array stored in RAM only")
-    else:
-        print("Preparing for data saving")
-        directory = g.diropenbox("select directory to save to", "select save directory")
-        time_now = datetime.now()
-        filename = directory + "\\4D-STEM_" + time_now.strftime("%d_%m_%Y %H_%M")
-    if save_as == "TIFF":
-        print("Saving",len(image_list),"files as .TIFF")
-        i = 0
-        if camera_frequency_hz>=2250: #faster than 2250 FPS, dectris camera only produces 8 bit images
-            data_type = np.uint8
-        else:
-            data_type = np.uint16 #if slower than 2250 FPS, camera can produce 16 bit images
-        for row in image_array:
-            print("Saving row",row,"of",scan_width_px)
-            for image in row:
-                image.astype(data_type) # sets data type based on camera speed
-                filename = f"{directory}\\4D_stem_{i:06}.tiff" #increments the number of the frame
-                cv2.imwrite(filename, image) #writes the frame
-                i += 1 #increases the number for the next frame
-        print("Saving complete") #status update
-    elif save_as == "NPY" or "npy":
-        print("Saving to numpy array")
-        np.save(filename, image_array)
-        print("Saving complete")
-    elif save_as == "Pickle" or "pickle":
-        print("saving as Pickle")
-        with open (f"{filename}.pdat","wb")as f:
-            p.dump(image_array,f)
-        print("Pickling complete")"""
-    return (image_array,metadata)
+
+    return (image_array,metadata) #tuple with image data and metadata
 
 
-#TODO add comments to this function
+
 #TODO use metadata for scalebar, maybe common function for all measurements
-#TODO docstrings
 def selected_area_diffraction(data_array):
+    """Takes a 4D data array as produced by scan_4D_basic and allows the user to select virtual apertures in the image
+    to integrate diffraction from"""
 
     if type(data_array) is tuple: #checks for metadata dictionary #TODO Checked ok with and without metadata
         image_array = data_array[0]
-        metadata = data_array[0]
+        metadata = data_array[1]
         print("Metadata exists")
+
     else:
         image_array = data_array
         metadata=None
@@ -147,63 +108,80 @@ def selected_area_diffraction(data_array):
 
     camera_data_shape = image_array[0][0].shape #shape of first image to get image dimensions
     dataset_shape = image_array.shape[0],image_array.shape[1] #scanned region shape
-    radius = 30  # pixels
-    VBF_intensity_list = []
+    radius = 30  # pixels for rough VBF image construction
+    VBF_intensity_list = [] #empty list to take virtual bright field image sigals
     integration_mask = create_circular_mask(camera_data_shape[0], camera_data_shape[1], mask_radius=radius)
-    for row in image_array:
+    for row in image_array: #iterates through array
         for pixel in row:
             VBF_intensity = np.sum(pixel[integration_mask])  # measures the intensity in the masked image
-            VBF_intensity_list.append(VBF_intensity)
+            VBF_intensity_list.append(VBF_intensity) #adds to the list
 
-    VBF_intensity_array = np.asarray(VBF_intensity_list)
-    VBF_intensity_array = np.reshape(VBF_intensity_array, (dataset_shape[0], dataset_shape[1]))
-    plt.figure(figsize=(10,10))
-    plt.imshow(VBF_intensity_array)
+    VBF_intensity_array = np.asarray(VBF_intensity_list) #converts list to array
+    VBF_intensity_array = np.reshape(VBF_intensity_array, (dataset_shape[0], dataset_shape[1])) #reshapes array to match image dimensions
+    plt.figure(figsize=(10,10)) #sets figure size large enough for clear display
+    plt.imshow(VBF_intensity_array) #plots VBF
 
     plt.title("Click to add points, right click to remove previous point, middle click to finsh and complete polygon")
-    plt.gray()
-    coords = plt.ginput(n=-1,show_clicks=True,timeout=0) #use 4 clicks to define the integration region
+    plt.gray() #sets grayscale
+    coords = plt.ginput(n=-1,show_clicks=True,timeout=0) #use user mouse input to define the integration region
     plt.close()
 
-    polygon = patches.Polygon(coords,fill=False,edgecolor="red")
+    polygon = patches.Polygon(coords,fill=False,edgecolor="red") #creates a polygon from the user defined intergration region
     poly = matpath(coords) #draws a polygon around the coordinates extracted from the image
 
-    all_pixel_coordinates = []
-    inside_pixels = []
+    all_pixel_coordinates = [] #list for all possible coordinates
+    inside_pixels = [] #list for coordinates within the polygon
 
+    """this is hacky but works"""
     points = image_array.shape[0],image_array.shape[1]
     for i in range(0,points[0]):
         for j in range(0,points[1]):
             all_pixel_coordinates.append([i,j])  # this can probably be done more elegantly
-    for pixel in all_pixel_coordinates:
-        is_inside = poly.contains_point(pixel)
-        if is_inside == True:
-            inside_pixels.append(pixel)
+    for pixel in all_pixel_coordinates: #for all possible pixels
+        is_inside = poly.contains_point(pixel) #checks if the pixel is inside the polygon
+        if is_inside == True: #if so, then
+            inside_pixels.append(pixel) #adds internal pixel to list
 
-    number_of_summed_patterns = len(inside_pixels)
+    number_of_summed_patterns = len(inside_pixels) #number of pixels within the polygon
 
-    fig,(ax1,ax2) = plt.subplots(1,2,figsize=(20,10))
+    fig,(ax1,ax2) = plt.subplots(1,2,figsize=(20,10)) #defines a 1x2 plot of reasonable size
     ax1.title.set_text("Integration region")
-    ax1.add_patch(polygon)
-    ax1.imshow(VBF_intensity_array)
 
-    subset_DP_list = []
-    for pixel in inside_pixels:
-        pattern = image_array[pixel[1]][pixel[0]]
-        pattern.astype(np.float64)
-        subset_DP_list.append(pattern)
+    pixel_to_axis_scale = (metadata["FOV in microns"]*1e3)/image_array.shape[0]
+    print(pixel_to_axis_scale)
 
-    subset_summed_DP = sum(subset_DP_list)
+    trans = tf.Affine2D().scale(pixel_to_axis_scale) + ax1.transData
 
-    zero_excluded_average = int(np.average(subset_summed_DP[~integration_mask]))
-    zero_excluded_max = max(subset_summed_DP[~integration_mask])
+    poly = patches.Polygon(np.c_[coords], facecolor='red', edgecolor='red', alpha=0.5,
+                   transform=trans)
 
-    ax2.imshow(subset_summed_DP,vmin=0,vmax=zero_excluded_max)
-    ax2.title.set_text(("Summed diffraction pattern from",number_of_summed_patterns,"patterns"))
+    ax1.add_patch(poly) #shows the polygon of the integration window
 
-    plt.show()
+    if metadata is not None:
+        flipped = np.flipud(VBF_intensity_array)
+        create_scalebar(ax1,10,metadata) #TODO figure out the scaling of the polygon
+        ax1.imshow(flipped,extent=[0,metadata["FOV in microns"]*1e3,0,metadata["FOV in microns"]*1e3]) #shows the VBF image under it
+        ax1.invert_yaxis()
+    else:
+        ax1.imshow(VBF_intensity_array)  # shows the VBF image under it
 
-    return subset_summed_DP, polygon, VBF_intensity_array
+
+    subset_DP_list = [] #empty list to take the diffraction patterns inside the polygon
+    for pixel in inside_pixels: #for each pixel inside the polygon
+        pattern = image_array[pixel[1]][pixel[0]] #take the diffraction pattern
+        pattern.astype(np.float64) #convert it to 64 bit (better for summation)
+        subset_DP_list.append(pattern) #add it to the empty list
+
+    subset_summed_DP = sum(subset_DP_list) #sum the list together
+
+
+    zero_excluded_max = max(subset_summed_DP[~integration_mask]) #highest intensity outside the zero order disk
+    ax2.imshow(subset_summed_DP,vmin=0,vmax=zero_excluded_max) #show the image and scale to that intensity
+    ax2.title.set_text(("Summed diffraction pattern from",number_of_summed_patterns,"patterns")) #add title
+
+    plt.show() #show plot
+
+    return subset_summed_DP, polygon, VBF_intensity_array #return the summed image, the polygon and the VBF image
 
 """def create_circular_mask(h, w, center=None, radius=None):
 
@@ -218,7 +196,7 @@ def selected_area_diffraction(data_array):
     mask = dist_from_center <= radius
     return mask"""
 
-def multi_VDF(data_array,radius=10):
+def multi_VDF(data_array,radius=None):
     """
      Produces virtual dark field images from user selected points
      Arguments:
@@ -234,16 +212,20 @@ def multi_VDF(data_array,radius=10):
         image_array = data_array[0]
         metadata = data_array[0]
         print("Metadata exists")
+        predicted_spot_radius = spot_radius_in_px(data_array)
+        print("The predicted spot radius is",predicted_spot_radius,"pixels")
     else:
         image_array = data_array
         metadata=None
         print("Metadata not present")
 
+    if radius is not None:
+        radius = radius
+    elif radius is None:
+        radius = predicted_spot_radius
 
     dataset_shape = image_array.shape[0], image_array.shape[1]
     dp_shape = image_array[0][0].shape
-
-    num_pixels = dataset_shape[0]*dataset_shape[1]
 
     subset_images = []
     for i in range(0,3*dataset_shape[0]): #take a number of random images from the dataset
@@ -301,35 +283,34 @@ def multi_VDF(data_array,radius=10):
     plt.imshow(sum_diffraction, vmin=0, vmax=av_int*10)
     plt.setp(ax, xticks=[], yticks=[])
     colors = list(mcolors.TABLEAU_COLORS)
+
     for coords in range(len(mask_list)):
         circle = plt.Circle(mask_list[coords], radius=radius, color=colors[coords], fill=True,alpha=0.3)
         ax.add_patch(circle)
-        # ax.annotate(str(coords+1),(mask_list[coords][0]-10,mask_list[coords][1]-15),color=colors[coords])
-    canvas = FigureCanvasAgg(fig)
-    fig.canvas.draw()
-    buf = canvas.buffer_rgba()
-    annotated_image = np.asarray(buf)
-    for i in range(len(mask_list)):
-        ax=fig.add_subplot(plot_grid[i+1])
-        ax.imshow(DF_images[i],cmap="gray")
-        ax.title.set_text(i+1)
-        ax.title.set_color(colors[i])
-        ax.spines['bottom'].set_color(colors[i])
-        ax.spines['bottom'].set_linewidth(3)
-        ax.spines['top'].set_color(colors[i])
-        ax.spines['top'].set_linewidth(3)
-        ax.spines['right'].set_color(colors[i])
-        ax.spines['right'].set_linewidth(3)
-        ax.spines['left'].set_color(colors[i])
-        ax.spines['left'].set_linewidth(3)
-        #bounding_box = plt.Rectangle(facecolor="none",color=colors[i])
-        #ax.add_patch()
-        plt.setp(ax, xticks=[], yticks=[])
-    plt.gray()
-    plt.show()
+
+    canvas = FigureCanvasAgg(fig) #defines a canvas
+    fig.canvas.draw() #plots the cavas
+    buf = canvas.buffer_rgba() #writes it to a buffer
+    annotated_image = np.asarray(buf) #converts the buffer to an image
+    for i in range(len(mask_list)): #for every mask used
+        ax=fig.add_subplot(plot_grid[i+1]) #selects the plotting grid position for the DF to go in
+        ax.imshow(DF_images[i],cmap="gray") #adds the DF image
+        ax.title.set_text(i+1) #mask number
+        ax.title.set_color(colors[i]) #colour code for title
+        ax.spines['bottom'].set_color(colors[i])#colour rim
+        ax.spines['bottom'].set_linewidth(3)#line thickness
+        ax.spines['top'].set_color(colors[i])#colour rim
+        ax.spines['top'].set_linewidth(3)#line thickness
+        ax.spines['right'].set_color(colors[i])#colour rim
+        ax.spines['right'].set_linewidth(3)#line thickness
+        ax.spines['left'].set_color(colors[i]) #colour rim
+        ax.spines['left'].set_linewidth(3) #line thickness
+        plt.setp(ax, xticks=[], yticks=[]) #removes ticks
+    plt.gray() #sets plots to be grayscale
+    plt.show() #shows the plot
     return annotated_image,sum_diffraction,DF_images #annotated image is scaled to show the final figure scale which is small #TODO make this better, maybe plot it again before export?
 
-
+#Checked ok
 def save_data(data_array,format=None,output_resolution=None):
     """Handles data saving for scan4D_basic
     Parameters
@@ -337,7 +318,7 @@ def save_data(data_array,format=None,output_resolution=None):
     format: default None
     output_resolution:Default None, used to set scaling of diffraction patterns, enter 128 or 256, will scale to square only
     """
-    if type(data_array) is tuple: #checks for metadata dictionary #TODO test this
+    if type(data_array) is tuple: #checks for metadata dictionary
         image_array = data_array[0]
         metadata = data_array[1]
         print("Metadata exists")
@@ -381,10 +362,7 @@ def save_data(data_array,format=None,output_resolution=None):
         json.dump(metadata,open_json,indent=6)
         open_json.close()
 
-
-
-
-
+#checked ok
 def import_tiff_series(scan_width=None):
     """Loads in a folder of TIFFs and creates a 4D-array for use with other functions"""
     directory = g.diropenbox("Select directory","Select Directory")
@@ -426,11 +404,7 @@ with open("C:\\Users\\robert.hooley\\Desktop\\Coding\\dataset_with_metadata.pdat
 
 #buffer,summed,df = multi_VDF(dataset_metadata,30)
 
-#a,b,c = selected_area_diffraction(dataset_metadata)
+a,b,c = selected_area_diffraction(dataset_metadata)
 
 #save_data(dataset_metadata)
 
-new_dataset = import_tiff_series()
-image_data = new_dataset[0]
-plt.imshow(image_data[0][0])
-plt.show()
