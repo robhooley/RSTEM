@@ -31,32 +31,10 @@ from matplotlib.path import Path as matpath
 import fnmatch
 import matplotlib.colors as mcolors
 
+from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px
+
 #TODO - add comments throughout
 #TODO clean up code and imports
-
-#TODO make utilities file for useful tools
-
-def spot_radius_in_px(data_array):
-    """Takes a data array and works out the diffraction spot radius in pixels from the metadata"""
-    if type(data_array) is tuple: #checks for metadata dictionary #TODO Checked ok with and without metadata
-        image_array = data_array[0] #splits the tuple to image array and metadata dictionary
-        metadata = data_array[0] #splits the tuple to image array and metadata dictionary
-        dp_shape = image_array[0][0].shape #shape of first
-        print("Metadata exists")
-
-    else:
-        image_array = data_array #if dataset is not a tuple, only image data is present
-        metadata=None #so there it no metadata
-        print("Metadata not present")
-
-    if metadata is not None: # TODO
-        convergence_semiangle = metadata["convergence angle mrad"]
-        diffraction_angle = metadata["diffraction size in mrad"] #TODO check if total or half angle
-        mrad_per_pixel = diffraction_angle/dp_shape[0]
-        convergence_pixels = convergence_semiangle/mrad_per_pixel
-        radius = convergence_pixels #semi-angle and radius
-
-    return radius
 
 def get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz):
     """Extracts acquisition conditions from the microscope and stores them in a dictionary
@@ -83,26 +61,6 @@ def get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz):
         microscope_info["precession angle in mrad"] = grpc_client.scanning.get_precession_angle()*1e3
         microscope_info["Precession Frequency in HZ"] = grpc_client.scanning.get_precession_frequency()
     return microscope_info
-
-
-def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None): #todo move to utilities file
-    if mask_center_coordinates is None:  # use the middle of the image
-        mask_center_coordinates = (int(image_width/2), int(image_height/2))
-    if mask_radius is None:  # use the smallest distance between the center and image walls
-        mask_radius = min(mask_center_coordinates[0], mask_center_coordinates[1], image_width - mask_center_coordinates[0], image_height - mask_center_coordinates[1])
-    Y, X = np.ogrid[:image_height, :image_width]
-    dist_from_center = np.sqrt((X - mask_center_coordinates[0])**2 + (Y - mask_center_coordinates[1])**2)
-    mask = dist_from_center <= mask_radius
-    return mask
-
-"""def coordinates_to_index(coordinates_list,num_pixels): #TODO can this be replaced with np.ravel_multi_index? #TODO Yes
-    index_baseline = num_pixels
-    coordinates_list = coordinates_list
-    index_list = []
-    for item in coordinates_list:
-        index = item[0]+(index_baseline[0]*item[1])
-        index_list.append(index)
-    return index_list"""
 
 #TODO more comments
 def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True):
@@ -199,6 +157,7 @@ def selected_area_diffraction(data_array):
 
     VBF_intensity_array = np.asarray(VBF_intensity_list)
     VBF_intensity_array = np.reshape(VBF_intensity_array, (dataset_shape[0], dataset_shape[1]))
+    plt.figure(figsize=(10,10))
     plt.imshow(VBF_intensity_array)
 
     plt.title("Click to add points, right click to remove previous point, middle click to finsh and complete polygon")
@@ -211,21 +170,19 @@ def selected_area_diffraction(data_array):
 
     all_pixel_coordinates = []
     inside_pixels = []
-    #num_pixels = image_array.shape[0],image_array.shape[1]
-    #print("num pixels",num_pixels)
 
-    points = image_array.shape[0],image_array.shape[1]  #change this to root of number of pixels #TODO do this better
+    points = image_array.shape[0],image_array.shape[1]
     for i in range(0,points[0]):
         for j in range(0,points[1]):
             all_pixel_coordinates.append([i,j])  # this can probably be done more elegantly
     for pixel in all_pixel_coordinates:
         is_inside = poly.contains_point(pixel)
         if is_inside == True:
-            #print("True")
             inside_pixels.append(pixel)
 
     number_of_summed_patterns = len(inside_pixels)
-    fig,(ax1,ax2) = plt.subplots(1,2)
+
+    fig,(ax1,ax2) = plt.subplots(1,2,figsize=(20,10))
     ax1.title.set_text("Integration region")
     ax1.add_patch(polygon)
     ax1.imshow(VBF_intensity_array)
@@ -246,7 +203,7 @@ def selected_area_diffraction(data_array):
 
     plt.show()
 
-    return subset_summed_DP, polygon, VBF_intensity_list
+    return subset_summed_DP, polygon, VBF_intensity_array
 
 """def create_circular_mask(h, w, center=None, radius=None):
 
@@ -295,7 +252,8 @@ def multi_VDF(data_array,radius=10):
 
     sum_diffraction = sum(subset_images)
     av_int = np.average(sum_diffraction)
-
+    plt.figure(figsize=(10,10))
+    plt.gray()
     plt.title("Click to place virtual apertures, right click to remove and middle click to finish, max masks 8")
     plt.imshow(sum_diffraction,vmax=av_int*10)
     mask_list = plt.ginput(n=8,show_clicks=True,timeout=0)
@@ -314,7 +272,6 @@ def multi_VDF(data_array,radius=10):
     DF_images = []
     for mask in range(len(mask_list)):
         DF_output = [i[mask] for i in all_mask_intensities] #TODO make this more intuitive
-
         DF_output = np.reshape(DF_output,(dataset_shape)) #reshapes the DF intensities to the scan dimensions
         DF_images.append(DF_output)
 
@@ -331,9 +288,7 @@ def multi_VDF(data_array,radius=10):
     elif len(mask_list) ==8:
         grid_rows, grid_cols = 3, 3 #3x3 plot for 8 +1DP
 
-
     plot_grid = gridspec.GridSpec(grid_rows, grid_cols)
-
 
     fig = plt.figure(figsize=(grid_cols*5,grid_rows*5))
 
@@ -347,13 +302,13 @@ def multi_VDF(data_array,radius=10):
     plt.setp(ax, xticks=[], yticks=[])
     colors = list(mcolors.TABLEAU_COLORS)
     for coords in range(len(mask_list)):
-        circle = plt.Circle(mask_list[coords], radius=radius, color=colors[coords], fill=False)
+        circle = plt.Circle(mask_list[coords], radius=radius, color=colors[coords], fill=True,alpha=0.3)
         ax.add_patch(circle)
         # ax.annotate(str(coords+1),(mask_list[coords][0]-10,mask_list[coords][1]-15),color=colors[coords])
     canvas = FigureCanvasAgg(fig)
     fig.canvas.draw()
     buf = canvas.buffer_rgba()
-    buffer = np.asarray(buf)
+    annotated_image = np.asarray(buf)
     for i in range(len(mask_list)):
         ax=fig.add_subplot(plot_grid[i+1])
         ax.imshow(DF_images[i],cmap="gray")
@@ -372,55 +327,40 @@ def multi_VDF(data_array,radius=10):
         plt.setp(ax, xticks=[], yticks=[])
     plt.gray()
     plt.show()
-    return buffer,sum_diffraction,DF_images
+    return annotated_image,sum_diffraction,DF_images #annotated image is scaled to show the final figure scale which is small #TODO make this better, maybe plot it again before export?
 
 
-def save_as_tiffs(data_array,output_resolution=None): #TODO remove
-
-    """Save an array to 16 bit TIFFs
-    Use output_resolution variable to rescale the images"""
-    image_array = data_array[0]  # TODO confirm this works
-    metadata = data_array[1]  # TODO confirm this works
-    directory = g.diropenbox("Select directory to save to","Select save directory")
-    i = 0
-    for row in tqdm(image_array): #iterates row by row
-        for pixel in row: #each pixel in each row
-            pixel.astype(np.uint16) #sets image type to 16 bit
-            if output_resolution is not None: #handles rescaling if used
-                pixel = cv2.resize(pixel,[output_resolution,output_resolution])
-            filename = f"{directory}\\4D_stem_{i:06}.tiff" #names files and defines format
-            cv2.imwrite(filename,pixel)  #saves the image
-            i += 1 #increments file name
-
-
-def save_data(data_array,format=None):
-
+def save_data(data_array,format=None,output_resolution=None):
+    """Handles data saving for scan4D_basic
+    Parameters
+    data_array: from scan_4D_basic, either with or without metadata
+    format: default None
+    output_resolution:Default None, used to set scaling of diffraction patterns, enter 128 or 256, will scale to square only
+    """
     if type(data_array) is tuple: #checks for metadata dictionary #TODO test this
         image_array = data_array[0]
-        metadata = data_array[0]
+        metadata = data_array[1]
         print("Metadata exists")
     else:
         image_array = data_array
         metadata=None
         print("Metadata not present")
 
-    #TODO take tuple called image_array and strip out metadata, then add metadata json save
-    """Handles data saving for scan4D_basic"""
-    print("Preparing for data saving")
     directory = g.diropenbox("select directory to save to", "select save directory")
-    time_now = datetime.now()
-    filename = directory + "\\4D-STEM_" + time_now.strftime("%d_%m_%Y %H_%M")
-    formats=["All images as TIFFs","Numpy array","Pickle"]
-    if format == None:
-        format = g.choicebox("Select format for data to be saved","select format for data to be saved",formats,preselect="All images as TIFFs")
+    print("Preparing for data saving")
+    filename = directory + "\\4D-STEM_"
 
+    formats=["TIFFs","Numpy array","Pickle"]
+    if format == None:
+        format = g.choicebox("Select format for data to be saved","select format for data to be saved",formats)
     shape_4D = image_array.shape
-    if format == "All images as TIFFs":
+    if format == "TIFFs":
         print("Saving",shape_4D[0]*shape_4D[1],"files as .tiff")
         i = 0
-        for row in image_array:
-            print("Saving row",row,"of",shape_4D[0])
+        for row in tqdm(image_array):
             for image in row:
+                if output_resolution is not None:  # handles rescaling if used
+                    image = cv2.resize(image, [output_resolution, output_resolution])
                 filename = f"{directory}\\4D_stem_{i:06}.tiff" #increments the number of the frame
                 cv2.imwrite(filename, image) #writes the frame
                 i += 1 #increases the number for the next frame
@@ -434,9 +374,11 @@ def save_data(data_array,format=None):
         with open (f"{filename}.pdat","wb")as f:
             p.dump(image_array,f)
         print("Pickling complete")
+
     if metadata is not None:
-        open_json = open(filename,"w")
-        json.dump(metadata,filename)
+        metadata_name = directory + "\\4D-STEM_metadata.json"
+        open_json = open(metadata_name,"w")
+        json.dump(metadata,open_json,indent=6)
         open_json.close()
 
 
@@ -463,23 +405,32 @@ def import_tiff_series(scan_width=None):
     image_list = [] #opens empty list
     for file in tqdm(folder): #iterates through folder with a progress bar
         path = directory+"\\"+file #picks individual images
-        image = cv2.imread(path,-1) #loads them with openCV
-        image_list.append(image) #adds them to a list of all images
+        if file.endswith(".tiff"):
+            image = cv2.imread(path,-1) #loads them with openCV
+            image_list.append(image) #adds them to a list of all images
 
     array = np.asarray(image_list) #converts the list to an array
-    reshaped_array = np.reshape(array,(scan_width,scan_width)) #reshapes the array to 4D dataset shape
+    cam_pixels_x,cam_pixels_y = image_list[0].shape
+    reshaped_array = np.reshape(array,(scan_width,scan_width,cam_pixels_x,cam_pixels_y)) #reshapes the array to 4D dataset shape
     if load_metadata == False:
         return reshaped_array
     else:
         return (reshaped_array,metadata)
 
-#with open("C:\\Users\\robert.hooley\\Desktop\\Coding\\dataset_with_metadata.pdat","rb") as f:
-#    dataset = p.load(f)
+with open("C:\\Users\\robert.hooley\\Desktop\\Coding\\dataset_with_metadata.pdat","rb") as f:
+    dataset_metadata = p.load(f)
 
 #print(dataset)
 
 #dataset_no_metadata = np.load("C:\\Users\\robert.hooley\\Desktop\\Coding\\4D-STEM_18_12_2023 15_31.npy")
 
-#buffer,summed,df = multi_VDF(dataset_no_metadata)
+#buffer,summed,df = multi_VDF(dataset_metadata,30)
 
-#a,b,c = selected_area_diffraction(dataset_no_metadata)
+#a,b,c = selected_area_diffraction(dataset_metadata)
+
+#save_data(dataset_metadata)
+
+new_dataset = import_tiff_series()
+image_data = new_dataset[0]
+plt.imshow(image_data[0][0])
+plt.show()

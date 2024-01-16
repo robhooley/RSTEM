@@ -20,7 +20,6 @@ import cv2 as cv2
 #manager.list_models()
 
 def drift_corrected_imaging(num_frames, series_output=False,shift_method="patches",num_pixels=None):
-    #%thread
     scan_rotation=0 #TODO is this scan rotation part really needed?
     R = np.array([[np.cos(scan_rotation), np.sin(scan_rotation)],
                   [-np.sin(scan_rotation), np.cos(scan_rotation)]])
@@ -31,7 +30,7 @@ def drift_corrected_imaging(num_frames, series_output=False,shift_method="patche
     fov = grpc_client.scanning.get_field_width() #in microns
     print("Field of View in um",fov)
 
-    #TODO add in option to calulcate series dose?
+    #TODO add in option to calculate series dose?
 
     if num_pixels == None:
         num_pixels = 1024
