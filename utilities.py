@@ -3,7 +3,7 @@ from datetime import datetime
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 import matplotlib.font_manager as fm
 
-from expert_pi import grpc_client
+#from expert_pi import grpc_client
 
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None): #todo move to utilities file
     if mask_center_coordinates is None:  # use the middle of the image
@@ -24,14 +24,14 @@ def spot_radius_in_px(data_array):
         dp_shape = shape_4D[2],shape_4D[3] #number of pixels in DP
         print("Metadata is present")
         convergence_semiangle = metadata.get("convergence semiangle mrad")
-        diffraction_angle = metadata.get("diffraction size in mrad") #TODO check if total or half angle
+        diffraction_angle = metadata.get("diffraction semiangle in mrad") #TODO check if total or half angle
         mrad_per_pixel = diffraction_angle/dp_shape[0] #angle calibration per pixel
         convergence_pixels = convergence_semiangle/mrad_per_pixel #convergence angle in pixels
         pixel_radius = convergence_pixels #semi-angle and radius
 
     else:
         print("Metadata is not present")
-        pixel_radius = 0
+        pixel_radius = 1
 
     return pixel_radius
 
@@ -140,3 +140,14 @@ def create_scalebar(ax,scalebar_size_pixels,metadata):
                            fontproperties=fontprops)
 
     ax.add_artist(scalebar)
+
+def create_plot_grid(num_fixed_images,num_variable_images):
+    num_total_plots = num_fixed_images+num_variable_images
+    if num_total_plots ==1 or 2 or 3:
+        grid_rows, grid_cols = 1, num_total_plots #1x3 plot for 2 masks +1DP
+
+    elif num_total_plots == 4:
+        grid_rows, grid_cols = 2, 2 #2x2 plot for 3 masks +1DP
+    elif num_total_plots == 5:
+        grid_rows, grid_cols = 2, 3
+ #TODO finish this mess

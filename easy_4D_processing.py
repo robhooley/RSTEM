@@ -22,7 +22,7 @@ from matplotlib import transforms as tf
 
 
 #from expert_pi.RSTEM.utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar #utilities file in RSTEM directory
-#from utilities import create_circular_mask,spot_radius_in_px
+from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar
 
 def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True):
     """Parameters
@@ -114,22 +114,24 @@ def selected_area_diffraction(data_array):
 
     number_of_summed_patterns = len(inside_pixels) #number of pixels within the polygon
 
+
+
     fig,(ax1,ax2) = plt.subplots(1,2,figsize=(20,10)) #defines a 1x2 plot of reasonable size
     ax1.title.set_text("Integration region")
 
     pixel_to_axis_scale = (metadata["FOV in microns"]*1e3)/image_array.shape[0]
-    print(pixel_to_axis_scale)
 
-    trans = tf.Affine2D().scale(pixel_to_axis_scale) + ax1.transData
 
-    poly = patches.Polygon(np.c_[coords], facecolor='red', edgecolor='red', alpha=0.5,
-                   transform=trans)
+    trans = tf.Affine2D().scale(pixel_to_axis_scale) + ax1.transData #coordinate system transform from image to spatial scale
 
-    ax1.add_patch(poly) #shows the polygon of the integration window
+    poly = patches.Polygon(np.c_[coords], facecolor='red', edgecolor='red', fill=False,
+                   transform=trans) #creates a polygon using the real spatial scale
+
+    ax1.add_patch(poly) #shows the polygon of the integration window in the calibrated image
 
     if metadata is not None:
         flipped = np.flipud(VBF_intensity_array)
-        create_scalebar(ax1,10,metadata) #TODO figure out the scaling of the polygon
+        create_scalebar(ax1,10,metadata)
         ax1.imshow(flipped,extent=[0,metadata["FOV in microns"]*1e3,0,metadata["FOV in microns"]*1e3]) #shows the VBF image under it
         ax1.invert_yaxis()
     else:
@@ -150,7 +152,7 @@ def selected_area_diffraction(data_array):
     ax2.title.set_text(("Summed diffraction pattern from",number_of_summed_patterns,"patterns")) #add title
 
     plt.show() #show plot
-
+    #TODO figure out how to use the buffer and canvas part of the multi VDF script to make this export an annotated image
     return subset_summed_DP, polygon, VBF_intensity_array #return the summed image, the polygon and the VBF image
 
 #checked ok
@@ -215,11 +217,12 @@ def multi_VDF(data_array,radius=None):
 
             all_mask_intensities.append(mask_intensities) #adds each pixels list to a list (nested lists)
 
-    DF_images = []
-    for mask in range(len(mask_list)):
-        DF_output = [i[mask] for i in all_mask_intensities] #TODO make this more intuitive, nested list iteration
+    DF_images = [] #empty list for DF images to be added to
+    for mask in range(len(mask_list)): #for every mask in the list
+        DF_output = [i[mask] for i in all_mask_intensities] #this works but I don't really understand why
         DF_output = np.reshape(DF_output,(dataset_shape)) #reshapes the DF intensities to the scan dimensions
-        DF_images.append(DF_output)
+        DF_images.append(DF_output) #adds DF images to a list
+
 
     if len(mask_list) ==1: #TODO make this less messy
         grid_rows,grid_cols=1,2 #1x2 plot for 1 mask
@@ -236,23 +239,46 @@ def multi_VDF(data_array,radius=None):
 
     plot_grid = gridspec.GridSpec(grid_rows, grid_cols) #defines the plot grid
 
+    """TESTING"""
+    av_int = np.average(sum_diffraction)  # calculates the average intensity in the diffraction pattern, for display scaling
+    colors = list(mcolors.TABLEAU_COLORS)  # sets a list of colours
+    export_fig = plt.figure(figsize=(10, 10))
+    export_axis = export_fig.add_subplot()
+    plt.imshow(sum_diffraction, vmin=0, vmax=av_int*10)
+    plt.setp(export_axis, xticks=[], yticks=[])  # removes tick markers
+    for coords in range(len(mask_list)):
+        circle = plt.Circle(mask_list[coords], radius=radius, color=colors[coords], fill=True,alpha=0.3) #defines the mask annotation
+        export_axis.add_patch(circle) #adds a circle for every mask used
+
+    plt.subplots_adjust(top=1, bottom=0, right=1, left=0,
+                        hspace=0, wspace=0) #removes whitespace
+    plt.margins(0, 0) #removes white space
+    canvas = FigureCanvasAgg(export_fig) #defines a canvas
+    export_fig.canvas.draw() #plots the canvas
+    buffered = canvas.buffer_rgba() #writes it to a buffer
+    annotated_image = np.asarray(buffered) #converts the buffer to an image
+
+    plt.close()
+
+
     fig = plt.figure(figsize=(grid_cols*5,grid_rows*5)) #makes a figure of reasonable
 
     ax=fig.add_subplot(plot_grid[0]) #adds the ax axis to the plot grid in the zero position
     ax.title.set_text("Summed diffraction with integration windows") #adds title
     av_int = np.average(sum_diffraction) #calculates the average intensity in the diffraction pattern, for display scaling
-    plt.imshow(sum_diffraction, vmin=0, vmax=av_int*10) #shows the summed diffraction
+    #plt.imshow(sum_diffraction, vmin=0, vmax=av_int*10) #shows the summed diffraction
+    plt.imshow(annotated_image)#, vmin=0, vmax=av_int*10)  # shows the summed diffraction
     plt.setp(ax, xticks=[], yticks=[]) #removes tick markers
     colors = list(mcolors.TABLEAU_COLORS) #sets a list of colours
 
-    for coords in range(len(mask_list)):
-        circle = plt.Circle(mask_list[coords], radius=radius, color=colors[coords], fill=True,alpha=0.3) #defines the mask annotation
-        ax.add_patch(circle) #adds a circle for every mask used
+    #for coords in range(len(mask_list)):
+    #    circle = plt.Circle(mask_list[coords], radius=radius, color=colors[coords], fill=True,alpha=0.3) #defines the mask annotation
+    #    ax.add_patch(circle) #adds a circle for every mask used
 
-    canvas = FigureCanvasAgg(fig) #defines a canvas
-    fig.canvas.draw() #plots the cavas
-    buf = canvas.buffer_rgba() #writes it to a buffer
-    annotated_image = np.asarray(buf) #converts the buffer to an image
+    #canvas = FigureCanvasAgg(fig) #defines a canvas
+    #fig.canvas.draw() #plots the cavas
+    #buf = canvas.buffer_rgba() #writes it to a buffer
+    #annotated_image = np.asarray(buf) #converts the buffer to an image
     for i in range(len(mask_list)): #for every mask used
         ax=fig.add_subplot(plot_grid[i+1]) #selects the plotting grid position for the DF to go in
         ax.imshow(DF_images[i],cmap="gray") #adds the DF image
@@ -269,6 +295,24 @@ def multi_VDF(data_array,radius=None):
         plt.setp(ax, xticks=[], yticks=[]) #removes ticks
     plt.gray() #sets plots to be grayscale
     plt.show() #shows the plot
+    plt.close()
+
+
+    """fig2 = plt.figure(figsize=(10,10))
+    ax_save=fig2.add_subplot()
+    plt.imshow(sum_diffraction, vmin=0, vmax=av_int*10) #shows the summed diffraction
+    plt.setp(ax_save, xticks=[], yticks=[]) #removes tick markers
+    colors = list(mcolors.TABLEAU_COLORS) #sets a list of colours
+
+    for coords in range(len(mask_list)):
+        circle = plt.Circle(mask_list[coords], radius=radius, color=colors[coords], fill=True,alpha=0.3) #defines the mask annotation
+        ax_save.add_patch(circle) #adds a circle for every mask used
+
+    #plt.show()
+    canvas2 = FigureCanvasAgg(fig2)  # defines a canvas
+    fig2.canvas.draw()  # plots the cavas
+    buf2 = canvas2.buffer_rgba()  # writes it to a buffer
+    annotated_image_new = np.asarray(buf2)  # converts the buffer to an image"""
     return annotated_image,sum_diffraction,DF_images #annotated image is scaled to show the final figure scale which is small #TODO make this better, maybe plot it again before export?
 
 #Checked ok
@@ -368,10 +412,12 @@ def import_tiff_series(scan_width=None):
 
 #print(dataset)
 
-#dataset_no_metadata = np.load("C:\\Users\\robert.hooley\\Desktop\\Coding\\4D-STEM_18_12_2023 15_31.npy")
+dataset_no_metadata = np.load("C:\\Users\\robert.hooley\\Desktop\\Coding\\4D-STEM_18_12_2023 15_31.npy")
 
-#buffer,summed,df = multi_VDF(dataset_metadata,30)
+buffer,summed,df = multi_VDF(dataset_no_metadata,30)
 
+plt.imshow(buffer)
+plt.show()
 #a,b,c = selected_area_diffraction(dataset_metadata)
 
 #save_data(dataset_metadata)
