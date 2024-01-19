@@ -1,36 +1,21 @@
-#%%threaded
 import math
-
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import Circle
 from matplotlib.patches import Annulus
-from matplotlib import patches, gridspec
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_agg import FigureCanvasAgg
 import easygui as g
 import cv2 as cv2
 import time
-from time import sleep
-from statistics import mean
-from tqdm import tqdm
-from skimage.transform import radon
-from skimage import exposure
-from pathlib import Path
-from math import ceil
-from matplotlib.path import Path as matpath
-import matplotlib.colors as mcolors
+
 
 from matplotlib.widgets import Button, Slider
 
 #TODO refactor background image to navigation image
-#TODO clean up imports
-#TODO consider having acquisition module and separate analysis module
+#TODO clean up code
 
-dataset = np.load("C:\\Users\\robert.hooley\\Desktop\\HR_4D_STEM.npy")
 
 def dataviewer_4D(data_array,background_image=None): #TODO refactor to image array not dataset
+
     def spot_marker(xposition, yposition): #sets the spot position in the virtual image
         ax[0].scatter(int(yposition.val), int(xposition.val),marker="+",c="red") #adds a red cross at user selected XY
 
@@ -119,15 +104,14 @@ def dataviewer_4D(data_array,background_image=None): #TODO refactor to image arr
             #print("time for savefig processing without diffraction", savefig_time)
 
     if type(data_array) is tuple: #checks for metadata dictionary
-        image_array = data_array[0]
-        metadata = data_array[0]
+        dataset = data_array[0]
+        metadata = data_array[1]
         print("Metadata exists")
     else:
-        image_array = data_array
+        dataset = data_array
         metadata=None
         print("Metadata not present")
-    #dataset = data_array[0]  # TODO confirm this works
-    #metadata = data_array[1]  # TODO confirm this works
+
 
     dataset_shape = dataset.shape #gets the shape of the incoming dataset array
     dataset_pixels = dataset_shape[0],dataset_shape[1] #works out scanning pixels
@@ -187,7 +171,7 @@ def dataviewer_4D(data_array,background_image=None): #TODO refactor to image arr
         save_list(dp_save_list,position_save_list,VBF_save_list) #save the data to disk
 
 
-def virtual_ADF(data_array,camera_size=None):
+def virtual_ADF(data_array):
 
     def put_diffraction(diffraction):
         ax[0].imshow(diffraction,cmap="gray")
@@ -299,14 +283,12 @@ def virtual_ADF(data_array,camera_size=None):
             cv2.imwrite(filename_VDF,VDF.astype(np.uint16))
     if type(data_array) is tuple: #checks for metadata dictionary
         image_array = data_array[0]
-        metadata = data_array[0]
+        metadata = data_array[1]
         print("Metadata exists")
     else:
         image_array = data_array
         metadata=None
         print("Metadata not present")
-    #image_array = data_array[0]  # TODO confirm this works
-    #metadata = data_array[1]  # TODO confirm this works
 
     max_angle = math.hypot(256,256)
     min_angle = 0
@@ -380,5 +362,3 @@ def virtual_ADF(data_array,camera_size=None):
 
     if len(VDF_list) != 0: #if the save button has been pressed
         save_list(radii,VDF_list) #save the data to disk
-
-virtual_ADF(dataset)

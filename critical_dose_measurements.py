@@ -22,6 +22,8 @@ from expert_pi.controllers import scan_helper
 from expert_pi.grpc_client.modules._common import DetectorType as DT
 #import json
 
+from utilities import get_microscope_parameters,get_number_of_nav_pixels,get_ui_dose_values,create_circular_mask
+
 def closest_coord(coord,coord_list):
     """Finds the coordinate in a list closest to the specified coordinate"""
     distances = []
@@ -36,7 +38,7 @@ def closest_coord(coord,coord_list):
     return closest_coordinate
 
 
-def create_circular_mask(h, w, center=None, radius=None):
+"""def create_circular_mask(h, w, center=None, radius=None):
 
     if center is None:  # use the middle of the image
         center = (int(w/2), int(h/2))
@@ -48,7 +50,7 @@ def create_circular_mask(h, w, center=None, radius=None):
 
     mask = dist_from_center <= radius
     return mask
-
+"""
 
 def get_template_spot_positions(processed_template,spot_size_in_pixels):
     """Cross correlation for image filtering"""
@@ -161,24 +163,38 @@ def get_template_spot_positions(processed_template,spot_size_in_pixels):
 
     plt.show()
 
-
     return template_spots,refined_center_spot_position, distances
 
-def get_spot_intensities(template_spots,image,integration_mask_radius):
-    spot_intensities = []
-    h, w = image.shape[:2]
+def create_spot_masks(template_spots,image,integration_mask_radius):
+    """Generates the spot masks so the function is only called once"""
+    h, w = image.shape[:2] #TODO refactor
+    spot_mask_list = []
     for i in range(len(template_spots)):  # for every spot in the template
-        # integration mask covers whole image except for the spot
         center = int(template_spots[i][1]),int(template_spots[i][0])
         integration_mask = create_circular_mask(h, w, center, radius=integration_mask_radius)
+        spot_mask_list.append(integration_mask)
+    return spot_mask_list
+
+#TODO move mask generation to a separate function so they are only created once
+def get_spot_intensities(template_spots,image,integration_mask_radius,spot_mask_list):
+    spot_intensities = []
+    """    h, w = image.shape[:2]
+    spot_masks = []
+    for i in range(len(template_spots)):  # for every spot in the template
+        center = int(template_spots[i][1]),int(template_spots[i][0])
+        integration_mask = create_circular_mask(h, w, center, radius=integration_mask_radius)
+        spot_masks.append(integration_mask)"""
+
+    for i in range(len(template_spots)):  # for every spot in the template
+        integration_mask = spot_mask_list[i]
         integrated_intensity = np.sum(image[integration_mask]) # measures the intensity in the mask
         spot_intensities.append(integrated_intensity)  # adds the intensity to the list of spot intensities
     return spot_intensities
 
-def acquire_datapoint(N,pixel_time,output="sum"): #checked ok
-    scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=N, frames=1, #run acquisition
+def acquire_datapoint(num_pixels,pixel_time,output="sum"): #checked ok
+    scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1, #run acquisition
                                                detectors=[DT.Camera])
-    header, data = cache_client.get_item(scan_id, N**2) #retrieve dataset
+    header, data = cache_client.get_item(scan_id, num_pixels**2) #retrieve dataset
     shape4D = (header['scanDimensions'][1], header['scanDimensions'][2], data['cameraData'].shape[1], data['cameraData'].shape[2]) #defines shape of 4D acquisition
     camera_data = data['cameraData'].reshape(shape4D)
     if output == "sum":
@@ -194,13 +210,13 @@ def beam_size_matched_acquisition(camera_FPS=4500,pixels=32): #checked ok
     grpc_client.scanning.set_field_width(matched_sampling_fov) #set fov in meters
     matched_sampling_fov = matched_sampling_fov*1e9 #multiplies to nanometers
     matched_sampling_fov = round(matched_sampling_fov,2) #rounds to 2dp
-    diffraction_pattern = acquire_datapoint(16,camera_FPS,"sum") #acquires a 4D-dataset and sums to 1 diffraction pattern
+    diffraction_pattern = acquire_datapoint(pixels,camera_FPS,"sum") #acquires a 4D-dataset and sums to 1 diffraction pattern
     return matched_sampling_fov,diffraction_pattern
 
-def get_number_of_nav_pixels(): #checked ok
+"""def get_number_of_nav_pixels(): #checked ok
     scan_field_pixels = window.scanning.size_combo.currentText() #gets the string of number of pixels from the UI (messy)
     pixels = int(scan_field_pixels.replace(" px", "")) #replaces the px with nothing and converts to an integer
-    return pixels
+    return pixels"""
 
 def get_ui_dose_values(units="nm"): # TODO check on live instrument
     illumination_parameters = grpc_client.illumination.get_spot_size()

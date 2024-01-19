@@ -21,36 +21,8 @@ from matplotlib import transforms as tf
 #from expert_pi.grpc_client.modules._common import DetectorType as DT
 
 
-from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar #utilities file in RSTEM directory
-
-#TODO - add comments throughout
-#TODO consider changing data array to tuple even if metadata is missing, check for data type based on tuple length not type
-
-def get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz):
-    """Extracts acquisition conditions from the microscope and stores them in a dictionary
-    Parameters:
-    scan_width_px: the number of pixels in the x axis
-    use_precession: True or False
-    camera_frequency_hz: The camera acquisition rate in FPS or Hz
-    """
-    fov = grpc_client.scanning.get_field_width() #get the current scanning FOV
-    pixel_size_nm = fov*1e3/scan_width_px #work out the pixel size in nanometers
-    time_now = datetime.now()
-    acquisition_time = time_now.strftime("%d_%m_%Y %H_%M")
-    microscope_info = { #creates a dictionary of microscope parameters
-    "FOV in microns" : fov*1e6,
-    "pixel size nm" : pixel_size_nm,
-    "probe current in picoamps" : grpc_client.illumination.get_current()*1e12,
-    "convergence semiangle mrad" : grpc_client.illumination.get_convergence_half_angle()*1e3,
-    "beam diameter (d50) in nanometers" : grpc_client.illumination.get_beam_diameter()*1e9,
-    "diffraction size in mrad" : grpc_client.projection.get_max_camera_angle()*1e3,
-    "Dwell time in ms": (1/camera_frequency_hz)*1e3,
-    "Acquisition date and time":acquisition_time}
-    if use_precession is True:
-        microscope_info["Using precssion"]="True"
-        microscope_info["precession angle in mrad"] = grpc_client.scanning.get_precession_angle()*1e3
-        microscope_info["Precession Frequency in HZ"] = grpc_client.scanning.get_precession_frequency()
-    return microscope_info
+#from expert_pi.RSTEM.utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar #utilities file in RSTEM directory
+#from utilities import create_circular_mask,spot_radius_in_px
 
 def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True):
     """Parameters
@@ -58,7 +30,7 @@ def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True
     camera_frequency: camera speed in frames per second up to 72000
     use_precession: True or False
     """
-
+    metadata = get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz) #gets the microscope and acquisition metadata
     if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(DT.HAADF) == True:
         grpc_client.stem_detector.set_is_inserted(DT.BF,False) #retract BF detector
         grpc_client.stem_detector.set_is_inserted(DT.HAADF, False) #retract ADF detector
@@ -80,7 +52,7 @@ def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True
             image_data = np.reshape(image_data,camera_size) #reshapes data to an individual image
             image_list.append(image_data) #adds it to the list of images
 
-    metadata = get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz) #gets the microscope and acquisition metadata
+
 
     print("reshaping array") #reshaping the array to match the 4D STEM acquisition
     image_array = np.asarray(image_list) #converts the image list to an array
@@ -89,9 +61,7 @@ def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=True
 
     return (image_array,metadata) #tuple with image data and metadata
 
-
-
-#TODO use metadata for scalebar, maybe common function for all measurements
+#TODO use metadata for scalebar, maybe common function for all measurements?
 def selected_area_diffraction(data_array):
     """Takes a 4D data array as produced by scan_4D_basic and allows the user to select virtual apertures in the image
     to integrate diffraction from"""
@@ -183,26 +153,13 @@ def selected_area_diffraction(data_array):
 
     return subset_summed_DP, polygon, VBF_intensity_array #return the summed image, the polygon and the VBF image
 
-"""def create_circular_mask(h, w, center=None, radius=None):
-
-    if center is None:  # use the middle of the image
-        center = (int(w/2), int(h/2))
-    if radius is None:  # use the smallest distance between the center and image walls
-        radius = min(center[0], center[1], w - center[0], h - center[1])
-
-    Y, X = np.ogrid[:h, :w]
-    dist_from_center = np.sqrt((X - center[0])**2 + (Y - center[1])**2)
-
-    mask = dist_from_center <= radius
-    return mask"""
-
+#checked ok
 def multi_VDF(data_array,radius=None):
     """
      Produces virtual dark field images from user selected points
      Arguments:
          image_list : numpy array of all diffraction patterns
          radius : virtual aperture radius in pixels, default is 10 pixels
-
     Returns:
         Summed diffraction pattern taken from all pixels
         List of Virtual Dark Field images
@@ -222,38 +179,45 @@ def multi_VDF(data_array,radius=None):
     if radius is not None:
         radius = radius
     elif radius is None:
-        radius = predicted_spot_radius
+        radius = predicted_spot_radius*1.3 #adds a 30% buffer to the predicted spot size
 
     dataset_shape = image_array.shape[0], image_array.shape[1]
     dp_shape = image_array[0][0].shape
 
     subset_images = []
-    for i in range(0,3*dataset_shape[0]): #take a number of random images from the dataset
+    for i in range(0,5*dataset_shape[0]): #take a number of random images from the dataset
         random_image = image_array[np.random.randint(0,dataset_shape[0])][np.random.randint(0,dataset_shape[1])]
         subset_images.append(random_image.astype(np.float64))
 
-    sum_diffraction = sum(subset_images)
-    av_int = np.average(sum_diffraction)
-    plt.figure(figsize=(10,10))
-    plt.gray()
+    sum_diffraction = sum(subset_images) #sums the random images to make a representative diffraction pattern
+    av_int = np.average(sum_diffraction) #calculates the average intensity of this pattern
+    plt.figure(figsize=(10,10)) #defines plot size
+    plt.gray() #sets it to grayscale
     plt.title("Click to place virtual apertures, right click to remove and middle click to finish, max masks 8")
-    plt.imshow(sum_diffraction,vmax=av_int*10)
-    mask_list = plt.ginput(n=8,show_clicks=True,timeout=0)
-    plt.close()
-    all_mask_intensities = []
+    plt.imshow(sum_diffraction,vmax=av_int*10) #plots the representative diffraction and scales the intensity
+    mask_list = plt.ginput(n=8,show_clicks=True,timeout=0) #user interacts to define mask positions
+    plt.close() #closes the plot
+    all_mask_intensities = [] #empty list for the mask data
+
+    integration_masks = []
+    for mask_coords in mask_list:
+        integration_mask = create_circular_mask(dp_shape[0], dp_shape[1], mask_center_coordinates=mask_coords,
+                                                mask_radius=radius)
+        integration_masks.append(integration_mask)
+
     for row in tqdm(image_array):
         for pixel in row:
-            mask_intensities = []
-            for mask_coords in mask_list:
-                integration_mask = create_circular_mask(dp_shape[0], dp_shape[1], mask_center_coordinates=mask_coords, mask_radius=radius)
+            mask_intensities = [] #empty list of mask intensities per pixel
+            for mask_coords in range(len(mask_list)): #for each mask
+                integration_mask = integration_masks[mask_coords] #takes mask from list and applies it
                 mask_intensity = np.sum(pixel[integration_mask])  # measures the intensity in the masked image
-                mask_intensities.append(mask_intensity)
+                mask_intensities.append(mask_intensity) #adds to the list
 
-            all_mask_intensities.append(mask_intensities)
+            all_mask_intensities.append(mask_intensities) #adds each pixels list to a list (nested lists)
 
     DF_images = []
     for mask in range(len(mask_list)):
-        DF_output = [i[mask] for i in all_mask_intensities] #TODO make this more intuitive
+        DF_output = [i[mask] for i in all_mask_intensities] #TODO make this more intuitive, nested list iteration
         DF_output = np.reshape(DF_output,(dataset_shape)) #reshapes the DF intensities to the scan dimensions
         DF_images.append(DF_output)
 
@@ -270,23 +234,20 @@ def multi_VDF(data_array,radius=None):
     elif len(mask_list) ==8:
         grid_rows, grid_cols = 3, 3 #3x3 plot for 8 +1DP
 
-    plot_grid = gridspec.GridSpec(grid_rows, grid_cols)
+    plot_grid = gridspec.GridSpec(grid_rows, grid_cols) #defines the plot grid
 
-    fig = plt.figure(figsize=(grid_cols*5,grid_rows*5))
+    fig = plt.figure(figsize=(grid_cols*5,grid_rows*5)) #makes a figure of reasonable
 
-    ax=fig.add_subplot(plot_grid[0])
-    ax.title.set_text("Summed diffraction with integration windows")
-    av_int = np.average(sum_diffraction)
-    max_int = np.max(sum_diffraction)
-    print("average intensity",av_int)
-    print("max intensity",max_int)
-    plt.imshow(sum_diffraction, vmin=0, vmax=av_int*10)
-    plt.setp(ax, xticks=[], yticks=[])
-    colors = list(mcolors.TABLEAU_COLORS)
+    ax=fig.add_subplot(plot_grid[0]) #adds the ax axis to the plot grid in the zero position
+    ax.title.set_text("Summed diffraction with integration windows") #adds title
+    av_int = np.average(sum_diffraction) #calculates the average intensity in the diffraction pattern, for display scaling
+    plt.imshow(sum_diffraction, vmin=0, vmax=av_int*10) #shows the summed diffraction
+    plt.setp(ax, xticks=[], yticks=[]) #removes tick markers
+    colors = list(mcolors.TABLEAU_COLORS) #sets a list of colours
 
     for coords in range(len(mask_list)):
-        circle = plt.Circle(mask_list[coords], radius=radius, color=colors[coords], fill=True,alpha=0.3)
-        ax.add_patch(circle)
+        circle = plt.Circle(mask_list[coords], radius=radius, color=colors[coords], fill=True,alpha=0.3) #defines the mask annotation
+        ax.add_patch(circle) #adds a circle for every mask used
 
     canvas = FigureCanvasAgg(fig) #defines a canvas
     fig.canvas.draw() #plots the cavas
@@ -351,9 +312,9 @@ def save_data(data_array,format=None,output_resolution=None):
         np.save(filename, image_array)
         print("Saving complete")
     elif format == "Pickle":
-        print(f"saving as Pickle {filename}.pdat file")
+        print(f"saving as Pickle with metadata {filename}.pdat file")
         with open (f"{filename}.pdat","wb")as f:
-            p.dump(image_array,f)
+            p.dump((image_array,metadata),f)
         print("Pickling complete")
 
     if metadata is not None:
@@ -369,7 +330,13 @@ def import_tiff_series(scan_width=None):
     if scan_width is None: #if scan width variable is empty, prompt user to enter it
         num_files = len(fnmatch.filter(os.listdir(directory), '*.tiff')) #counts how many .tiff files are in the directory
         guessed_scan_width = int(np.sqrt(num_files)) #assumes it is a square acquisition
-        scan_width=g.integerbox("Enter scan width in pixels","Enter scan width in pixels",default=guessed_scan_width)
+        scan_width=g.integerbox(f"Enter scan width in pixels, there are {num_files} TIFF files in this folder, scan width might be {guessed_scan_width}","Enter scan width in pixels",default=guessed_scan_width)
+
+    scan_height = num_files/scan_width
+    if type(scan_height) is not int:
+        scan_width = g.integerbox(f"Enter scan width in pixels, previous entry was likely not correct, there are {num_files} files in this folder", "Enter scan width in pixels",
+                                  default=guessed_scan_width)
+
 
     load_metadata = g.ynbox("Do you want to load the metadata .JSON file?","Do you want to load the metadata .JSON file")
     if load_metadata == False:
@@ -389,14 +356,15 @@ def import_tiff_series(scan_width=None):
 
     array = np.asarray(image_list) #converts the list to an array
     cam_pixels_x,cam_pixels_y = image_list[0].shape
-    reshaped_array = np.reshape(array,(scan_width,scan_width,cam_pixels_x,cam_pixels_y)) #reshapes the array to 4D dataset shape
+    reshaped_array = np.reshape(array,(scan_width,scan_height,cam_pixels_x,cam_pixels_y)) #reshapes the array to 4D dataset shape #TODO confirm ordering of scan width and height with non-square dataset
     if load_metadata == False:
-        return reshaped_array
+        return reshaped_array #just a data array reshaped to the 4D STEM acquisition shape
     else:
-        return (reshaped_array,metadata)
+        return (reshaped_array,metadata) #tuple containing the data array and the metadata dictionary
 
-with open("C:\\Users\\robert.hooley\\Desktop\\Coding\\dataset_with_metadata.pdat","rb") as f:
-    dataset_metadata = p.load(f)
+
+#with open("C:\\Users\\robert.hooley\\Desktop\\Customer images\\Jilin 2024\\Powder grid 1\\4D-STEM_1.pdat","rb") as f:
+#    dataset_metadata = p.load(f)
 
 #print(dataset)
 
@@ -404,7 +372,7 @@ with open("C:\\Users\\robert.hooley\\Desktop\\Coding\\dataset_with_metadata.pdat
 
 #buffer,summed,df = multi_VDF(dataset_metadata,30)
 
-a,b,c = selected_area_diffraction(dataset_metadata)
+#a,b,c = selected_area_diffraction(dataset_metadata)
 
 #save_data(dataset_metadata)
 

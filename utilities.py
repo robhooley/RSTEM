@@ -3,11 +3,7 @@ from datetime import datetime
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 import matplotlib.font_manager as fm
 
-#from expert_pi import grpc_client
-#from expert_pi.controllers import scan_helper
-#from expert_pi.stream_clients import cache_client
-#from expert_pi.grpc_client.modules._common import DetectorType as DT
-
+from expert_pi import grpc_client
 
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None): #todo move to utilities file
     if mask_center_coordinates is None:  # use the middle of the image
@@ -39,6 +35,11 @@ def spot_radius_in_px(data_array):
 
     return pixel_radius
 
+def get_number_of_nav_pixels(): #checked ok
+    scan_field_pixels = window.scanning.size_combo.currentText() #gets the string of number of pixels from the UI (messy)
+    pixels = int(scan_field_pixels.replace(" px", "")) #replaces the px with nothing and converts to an integer
+    return pixels
+
 def get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz):
     """Extracts acquisition conditions from the microscope and stores them in a dictionary
     Parameters:
@@ -47,18 +48,20 @@ def get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz):
     camera_frequency_hz: The camera acquisition rate in FPS or Hz
     """
     fov = grpc_client.scanning.get_field_width() #get the current scanning FOV
-    pixel_size_nm = fov*1e3/scan_width_px #work out the pixel size in nanometers
+    pixel_size_nm = (fov/scan_width_px)*1e9 #work out the pixel size in nanometers
     time_now = datetime.now()
     acquisition_time = time_now.strftime("%d_%m_%Y %H_%M")
     microscope_info = { #creates a dictionary of microscope parameters
+    "scan width in pixels":scan_width_px,
     "FOV in microns" : fov*1e6,
     "pixel size nm" : pixel_size_nm,
     "probe current in picoamps" : grpc_client.illumination.get_current()*1e12,
     "convergence semiangle mrad" : grpc_client.illumination.get_convergence_half_angle()*1e3,
     "beam diameter (d50) in nanometers" : grpc_client.illumination.get_beam_diameter()*1e9,
-    "diffraction size in mrad" : grpc_client.projection.get_max_camera_angle()*1e3,
+    "diffraction semiangle in mrad" : grpc_client.projection.get_max_camera_angle()*1e3,
     "Dwell time in ms": (1/camera_frequency_hz)*1e3,
-    "Acquisition date and time":acquisition_time}
+    "Acquisition date and time":acquisition_time
+    }
     if use_precession is True:
         microscope_info["Using precssion"]="True"
         microscope_info["precession angle in mrad"] = grpc_client.scanning.get_precession_angle()*1e3
@@ -91,8 +94,13 @@ def get_ui_dose_values(units="nm"): # TODO check on live instrument
     print(pixel_to_probe_ratio)
     if pixel_to_probe_ratio > 1:
         print(f"Pixel size is {pixel_to_probe_ratio} times larger than probe size, undersampling conditions")
-    else:
+        sampling_conditions = "Undersampling"
+    elif pixel_to_probe_ratio < 1 :
         print(f"Probe size is {pixel_to_probe_ratio} times larger than probe size, oversampling conditions")
+        sampling_conditions = "Oversampling"
+    else:
+        print("Probe size and pixel sizre are perfectly matched")
+        sampling_conditions = "Perfect sampling"
 
     if units == "nm":
         pixel_dose = electrons_per_meter_square_pixel*1e-18
@@ -108,9 +116,12 @@ def get_ui_dose_values(units="nm"): # TODO check on live instrument
 
     dose_unit = f"e-{units}-2"
 
-    dose_values = {"pixel dose":pixel_dose, #dictionary of values
+    dose_values = {"pixel dose":pixel_dose,
+                   "pixel size":pixel_size, #dictionary of values
                     "probe dose":probe_dose,
-                   "dose units":dose_unit}
+                   "probe size":probe_size,
+                   "dose units":dose_unit,
+                   "Sampling conditions":sampling_conditions}
 
     return dose_values #returns dose values and the unit
 
