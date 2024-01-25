@@ -52,8 +52,6 @@ def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=Fals
             image_data = np.reshape(image_data,camera_size) #reshapes data to an individual image
             image_list.append(image_data) #adds it to the list of images
 
-
-
     print("reshaping array") #reshaping the array to match the 4D STEM acquisition
     image_array = np.asarray(image_list) #converts the image list to an array
     image_array = np.reshape(image_array, (scan_width_px, scan_width_px, camera_size[0], camera_size[1])) #reshapes the array to match the acquisition
