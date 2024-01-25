@@ -44,7 +44,7 @@ def get_number_of_nav_pixels(): #checked ok
 
 
 #TODO test new metadata function
-def get_microscope_parameters(scan_width_px=None,use_precession=False,camera_frequency_hz=None,STEM_dwell_time=None):
+def get_microscope_parameters(scan_width_px=None,use_precession=False,camera_frequency_hz=None,STEM_dwell_time=None,scan_rotation=None):
     """Extracts acquisition conditions from the microscope and stores them in a dictionary
     Parameters:
     scan_width_px: the number of pixels in the x axis
@@ -88,6 +88,7 @@ def get_microscope_parameters(scan_width_px=None,use_precession=False,camera_fre
     f"Dwell time ({dwell_time_units})": dwell_time,
     "Diffraction semiangle (mrad)" : grpc_client.projection.get_max_camera_angle()*1e3,
     "Camera pixel size (A^-1)":pixel_size_inv_angstrom,
+    "Scan rotation (º)":scan_rotation,
     "Rotation angle between diffraction pattern and stage XY (º)":np.rad2deg(grpc_client.projection.get_camera_to_stage_rotation()),
     "Alpha tilt (º)": grpc_client.stage.get_alpha()/np.pi*180,
     "Beta tilt (º)": grpc_client.stage.get_beta()/np.pi*180,

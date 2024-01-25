@@ -5,19 +5,85 @@ from expert_pi.stream_clients import cache_client
 from expert_pi.grpc_client.modules._common import DetectorType as DT
 from stem_measurements import shift_measurements
 import numpy as np
+from time import sleep
 import cv2 as cv2
 
-#from serving_manager.api import registration_model
-#from serving_manager.api import super_resolution_model
-#from serving_manager.api import TorchserveRestManager
+from serving_manager.api import registration_model
+from serving_manager.api import super_resolution_model
+from serving_manager.api import TorchserveRestManager
 
-
+from utilities import get_microscope_parameters
 
 #registration_model(image, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
 #super_resolution_model(image=image, model_name='SwinIRImageDenoiser', host='172.19.1.16', port='7447') #for denoising
 #manager = TorchserveRestManager(inference_port='8600', management_port='8081', host='172.19.1.16', image_encoder='.png')
-#manager.infer(image=image, model_name='spot_segmentation')
+#manager.infer(image=image, model_name='spot_segmentation') #spot detection
 #manager.list_models()
+
+
+#TODO untested
+def acquire_STEM(signals = ["BF","ADF"], fov=None,pixel_time_us=None,num_pixels=None,scan_rotation=None):
+    """Acquires a single STEM image from the requested detectors
+    returns a tuple with the images and the metadata in a dictionary
+    Parameters
+    signals: list of signals in string form ["BF","ADF"]
+    fov : field of view in microns
+    pixel_time_us: dwell time in microseconds
+    num_pixels: scan width in pixels,
+    scan_rotation: scan rotation in degrees"""
+
+    if scan_rotation is not None:
+        grpc_client.scanning.set_rotation(np.deg2rad(scan_rotation))
+    if pixel_time_us is None:
+        pixel_time = window.scanning.pixel_time_spin.value()/1e6  # gets current pixel time from UI and convert to seconds
+    else:
+        pixel_time = pixel_time_us/1e6
+    if fov is not None:
+        grpc_client.scanning.set_field_width(fov) #in microns
+    if num_pixels is None:
+        num_pixels = 1024
+
+    if "BF" and "ADF" in signals:
+        detectors = [DT.BF,DT.HAADF]
+        if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(
+                DT.HAADF) is False:
+            grpc_client.stem_detector.set_is_inserted(DT.BF,True) #insert BF detector
+            grpc_client.stem_detector.set_is_inserted(DT.HAADF, True) #insert ADF detector
+            print("Inserting requested detectors")
+            sleep(5)
+    elif "BF" and not "ADF" in signals:
+        detectors = [DT.BF]
+        if grpc_client.stem_detector.get_is_inserted(DT.BF) is False:
+            grpc_client.stem_detector.set_is_inserted(DT.BF, True)  # insert BF detector
+            print("Inserting requested detectors")
+            sleep(5)
+    elif "ADF" and not "BF" in signals:
+        detectors = [DT.HAADF]
+        if grpc_client.stem_detector.get_is_inserted(DT.HAADF) is False:
+            grpc_client.stem_detector.set_is_inserted(DT.HAADF, True)  # insert ADF detector
+            print("Inserting requested detectors")
+            sleep(5)
+
+    metadata = get_microscope_parameters(num_pixels,False,False,
+                                         pixel_time_us,scan_rotation=scan_rotation)
+
+    scan = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
+                                               detectors=detectors)
+    header, data = cache_client.get_item(scan, num_pixels ** 2) #retrive small measurements in one chunk
+
+    if "BF" and "ADF" in signals:
+        BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
+        ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
+        return(BF_image,ADF_image,metadata)
+
+    if "BF" and not "ADF" in signals:
+        BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
+        return(BF_image,metadata)
+
+    if "ADF" and not "BF" in signals:
+        ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
+        return(ADF_image,metadata)
+
 
 def drift_corrected_imaging(num_frames, pixel_time_us=None,series_output=False,shift_method="patches",num_pixels=None,):
     scan_rotation=0 #TODO is this scan rotation part really needed?
@@ -64,7 +130,7 @@ def drift_corrected_imaging(num_frames, pixel_time_us=None,series_output=False,s
     for frame in range(num_frames):
         print("Acquiring frame",frame,"of",num_frames)
         scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
-                                                   detectors=[DT.BF, DT.HAADF, DT.EDX1, DT.EDX0])
+                                                   detectors=[DT.BF, DT.HAADF])
 
         header, data = cache_client.get_item(scan_id, num_pixels ** 2) #retrive image from cache
         BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels) #reshape BF image
@@ -79,10 +145,13 @@ def drift_corrected_imaging(num_frames, pixel_time_us=None,series_output=False,s
         shift = np.dot(R, shift)  # rotate shifts back to scanning axes
         #print(i, (s0['x'] - s['x']) * 1e9, (s0['y'] - s['y']) * 1e9)
         grpc_client.illumination.set_shift(
-                {"x": s['x'] - shift[0] * 1e-6, "y": s['y'] - shift[1] * 1e-6},grpc_client.illumination.DeflectorType.Scan) #apply shifts in microns to existing shits
+                {"x": s['x'] - shift[0] * 1e-6, "y": s['y'] - shift[1] * 1e-6},grpc_client.illumination.DeflectorType.Scan) #apply shifts in microns to existing shifts
 
-    BF_summed = sum(BF_images_list)
-    ADF_summed = sum(ADF_images_list)
+    BF_images_array = np.asarray(BF_images_list)
+    ADF_images_array = np.asarray(ADF_images_list)
+
+    BF_summed = np.sum(BF_images_array,axis=0,dtype=np.float64)
+    ADF_summed = np.sum(ADF_images_array,axis=0,dtype=np.float64)
 
     if series_output ==  False:
         return BF_summed, ADF_summed
