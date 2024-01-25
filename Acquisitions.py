@@ -11,7 +11,7 @@ import cv2 as cv2
 #from serving_manager.api import super_resolution_model
 #from serving_manager.api import TorchserveRestManager
 
-print("push")
+
 
 #registration_model(image, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
 #super_resolution_model(image=image, model_name='SwinIRImageDenoiser', host='172.19.1.16', port='7447') #for denoising

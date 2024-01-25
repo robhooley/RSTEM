@@ -380,3 +380,6 @@ def import_tiff_series(scan_width=None):
         return reshaped_array #just a data array reshaped to the 4D STEM acquisition shape
     else:
         return (reshaped_array,metadata) #tuple containing the data array and the metadata dictionary
+
+def push():
+    print("push")

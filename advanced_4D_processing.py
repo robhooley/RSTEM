@@ -27,7 +27,7 @@ from utilities import create_circular_mask,get_microscope_parameters,spot_radius
 
 
 
-
+print("push")
 
 #TODO use metadata for scalebar, maybe common function for all measurements?
 def calibrated_selected_area_diffraction(data_array):
