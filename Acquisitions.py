@@ -19,13 +19,17 @@ import cv2 as cv2
 #manager.infer(image=image, model_name='spot_segmentation')
 #manager.list_models()
 
-def drift_corrected_imaging(num_frames, series_output=False,shift_method="patches",num_pixels=None):
+def drift_corrected_imaging(num_frames, pixel_time_us=None,series_output=False,shift_method="patches",num_pixels=None,):
     scan_rotation=0 #TODO is this scan rotation part really needed?
     R = np.array([[np.cos(scan_rotation), np.sin(scan_rotation)],
                   [-np.sin(scan_rotation), np.cos(scan_rotation)]])
     grpc_client.scanning.set_rotation(scan_rotation)
 
-    pixel_time = window.scanning.pixel_time_spin.value()/1e6  # gets in us and convert to s
+    if pixel_time_us==None:
+        pixel_time = window.scanning.pixel_time_spin.value()/1e6  # gets current pixel time from UI and convert to seconds
+    else:
+        pixel_time = pixel_time_us/1e6
+
     print("Pixel time",int(pixel_time*1e9),"ns")
     fov = grpc_client.scanning.get_field_width() #in microns
     print("Field of View in um",fov)
