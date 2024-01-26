@@ -67,9 +67,9 @@ def acquire_STEM(signals = ["BF","ADF"], fov=None,pixel_time_us=None,num_pixels=
     metadata = get_microscope_parameters(num_pixels,False,False,
                                          pixel_time_us,scan_rotation=scan_rotation)
 
-    scan = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
+    scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
                                                detectors=detectors)
-    header, data = cache_client.get_item(scan, num_pixels ** 2) #retrive small measurements in one chunk
+    header, data = cache_client.get_item(scan_id, num_pixels ** 2) #retrive small measurements in one chunk
 
     if "BF" and "ADF" in signals:
         BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)

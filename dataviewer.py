@@ -13,6 +13,7 @@ from matplotlib.widgets import Button, Slider
 #TODO refactor background image to navigation image
 #TODO clean up code
 
+from utilities import create_circular_mask
 
 def dataviewer_4D(data_array,background_image=None): #TODO refactor to image array not dataset
 
@@ -216,7 +217,7 @@ def virtual_ADF(data_array):
         generated_image = np.reshape(VDF_array,(dataset_shape[0],dataset_shape[1]))
         return generated_image
 
-    def create_circular_mask(h, w, center=None, radius=None):
+        """def create_circular_mask(h, w, center=None, radius=None):
 
         if center is None:  # use the middle of the image
             center = (int(w / 2), int(h / 2))
@@ -227,7 +228,7 @@ def virtual_ADF(data_array):
         dist_from_center = np.sqrt((X - center[0]) ** 2 + (Y - center[1]) ** 2)
 
         mask = dist_from_center <= radius
-        return mask
+        return mask"""
 
     def generating(val):
         inner_radius = inner_mask_value.val
@@ -281,6 +282,7 @@ def virtual_ADF(data_array):
             #ax.invert_yaxis()
             plt.savefig(filename_VDF,bbox_inches='tight',pad_inches = 0)
             cv2.imwrite(filename_VDF,VDF.astype(np.uint16))
+
     if type(data_array) is tuple: #checks for metadata dictionary
         image_array = data_array[0]
         metadata = data_array[1]
