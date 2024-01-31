@@ -22,7 +22,7 @@ from expert_pi.controllers import scan_helper
 from expert_pi.grpc_client.modules._common import DetectorType as DT
 #import json
 
-from utilities import get_microscope_parameters,get_number_of_nav_pixels,get_ui_dose_values,create_circular_mask
+from utilities import get_microscope_parameters,get_number_of_nav_pixels,calculate_dose,create_circular_mask
 
 def closest_coord(coord,coord_list):
     """Finds the coordinate in a list closest to the specified coordinate"""
@@ -176,7 +176,7 @@ def create_spot_masks(template_spots,image,integration_mask_radius):
     return spot_mask_list
 
 #TODO move mask generation to a separate function so they are only created once
-def get_spot_intensities(template_spots,image,integration_mask_radius,spot_mask_list):
+def get_spot_intensities(template_spots,image,spot_mask_list):
     spot_intensities = []
     """    h, w = image.shape[:2]
     spot_masks = []
@@ -212,57 +212,3 @@ def beam_size_matched_acquisition(camera_FPS=4500,pixels=32): #checked ok
     matched_sampling_fov = round(matched_sampling_fov,2) #rounds to 2dp
     diffraction_pattern = acquire_datapoint(pixels,camera_FPS,"sum") #acquires a 4D-dataset and sums to 1 diffraction pattern
     return matched_sampling_fov,diffraction_pattern
-
-"""def get_number_of_nav_pixels(): #checked ok
-    scan_field_pixels = window.scanning.size_combo.currentText() #gets the string of number of pixels from the UI (messy)
-    pixels = int(scan_field_pixels.replace(" px", "")) #replaces the px with nothing and converts to an integer
-    return pixels"""
-
-def get_ui_dose_values(units="nm"): # TODO check on live instrument
-    illumination_parameters = grpc_client.illumination.get_spot_size()
-    probe_current = illumination_parameters["current"] #in amps
-
-    dwell_time = window.scanning.pixel_time_spin.value() #always in us from expi window
-    electrons_per_amp = 6.28e18
-    electrons_in_probe = electrons_per_amp*probe_current #electrons in probe per second
-    electrons_per_pixel_dwell = electrons_in_probe*(dwell_time/1e6) #divide by dwell time in seconds
-
-    """pixel size calculation"""
-    scan_fov = grpc_client.scanning.get_field_width()
-    num_pixels = get_number_of_nav_pixels()
-    pixel_size = scan_fov/num_pixels #in meters
-    pixel_area = pixel_size**2
-    electrons_per_meter_square_pixel = electrons_per_pixel_dwell/pixel_area
-
-    """probe size calculation"""
-    probe_size = illumination_parameters["d50"] #in meters
-    probe_area = np.pi*(probe_size/2)**2 #assume circular probe
-    electrons_per_meter_square_probe = electrons_per_pixel_dwell/probe_area
-
-    """Calculate pixel size to probe size ratio"""
-    pixel_to_probe_ratio = pixel_size/probe_size
-    print(pixel_to_probe_ratio)
-    if pixel_to_probe_ratio > 1:
-        print(f"Pixel size is {pixel_to_probe_ratio} times larger than probe size, undersampling conditions")
-    else:
-        print(f"Probe size is {pixel_to_probe_ratio} times larger than probe size, oversampling conditions")
-
-    if units == "nm":
-        pixel_dose = electrons_per_meter_square_pixel*1e-18
-        probe_dose = electrons_per_meter_square_probe*1e-18
-
-    elif units == "m":
-        pixel_dose = electrons_per_meter_square_pixel
-        probe_dose = electrons_per_meter_square_probe
-
-    elif units == "A" or "angstrom" or "Angstrom":
-        pixel_dose = electrons_per_meter_square_pixel*1e-20
-        probe_dose = electrons_per_meter_square_probe*1e-20
-
-    dose_unit = f"e-{units}-2"
-
-    dose_values = {"pixel dose":pixel_dose, #dictionary of values
-                    "probe dose":probe_dose,
-                   "dose units":dose_unit}
-
-    return dose_values #returns dose values and the unit

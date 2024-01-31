@@ -15,7 +15,7 @@ from matplotlib.widgets import Button, Slider
 
 from utilities import create_circular_mask
 
-def dataviewer_4D(data_array,background_image=None): #TODO refactor to image array not dataset
+def dataviewer_4D(data_array,background_image=None): #TODO refactor
 
     def spot_marker(xposition, yposition): #sets the spot position in the virtual image
         ax[0].scatter(int(yposition.val), int(xposition.val),marker="+",c="red") #adds a red cross at user selected XY
@@ -217,7 +217,7 @@ def virtual_ADF(data_array):
         generated_image = np.reshape(VDF_array,(dataset_shape[0],dataset_shape[1]))
         return generated_image
 
-        """def create_circular_mask(h, w, center=None, radius=None):
+    """def create_circular_mask(h, w, center=None, radius=None):
 
         if center is None:  # use the middle of the image
             center = (int(w / 2), int(h / 2))
