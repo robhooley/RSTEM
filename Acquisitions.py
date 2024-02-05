@@ -6,13 +6,16 @@ from expert_pi.grpc_client.modules._common import DetectorType as DT
 from stem_measurements import shift_measurements
 import numpy as np
 from time import sleep
+import easygui as g
 import cv2 as cv2
+import fnmatch
+import os
 
 from serving_manager.api import registration_model
 from serving_manager.api import super_resolution_model
 from serving_manager.api import TorchserveRestManager
 
-from utilities import get_microscope_parameters
+#from utilities import get_microscope_parameters
 
 #registration_model(image, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
 #super_resolution_model(image=image, model_name='SwinIRImageDenoiser', host='172.19.1.16', port='7447') #for denoising
@@ -84,8 +87,22 @@ def acquire_STEM(signals = ["BF","ADF"], fov=None,pixel_time_us=None,num_pixels=
         ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
         return(ADF_image,metadata)
 
+#TODO untested
+def save_STEM(image,name=None,folder=None):
+    if folder == None:
+        folder = g.diropenbox("Enter save location","Enter save location")
+        folder + "\\"
+    if name == None:
+        num_files_in_dir = len(fnmatch.filter(os.listdir(folder), '*.tiff'))
+        name = f"STEM000{num_files_in_dir+1}" #should increment the image number
+    name = name+".tiff"
+    filename = str(folder+name)
+    print(f"Saving {name} to {folder}")
+    cv2.imwrite(filename,image)
 
-def drift_corrected_imaging(num_frames, pixel_time_us=None,series_output=False,shift_method="patches",num_pixels=None,):
+
+#TODO test again
+def drift_corrected_imaging(num_frames, pixel_time_us=None,series_output=False,shift_method="patches",num_pixels=None):
     scan_rotation=0 #TODO is this scan rotation part really needed?
     R = np.array([[np.cos(scan_rotation), np.sin(scan_rotation)],
                   [-np.sin(scan_rotation), np.cos(scan_rotation)]])
@@ -98,7 +115,7 @@ def drift_corrected_imaging(num_frames, pixel_time_us=None,series_output=False,s
 
     print("Pixel time",int(pixel_time*1e9),"ns")
     fov = grpc_client.scanning.get_field_width() #in microns
-    print("Field of View in um",fov)
+    print("Field of View in m",fov)
 
     #TODO add in option to calculate series dose?
 
@@ -154,9 +171,56 @@ def drift_corrected_imaging(num_frames, pixel_time_us=None,series_output=False,s
     ADF_summed = np.sum(ADF_images_array,axis=0,dtype=np.float64)
 
     if series_output ==  False:
-        return BF_summed, ADF_summed
         print("Summed image output")
+        return BF_summed, ADF_summed
+
 
     if series_output == True:
-        return BF_images_list, ADF_images_list
         print("Image series output")
+        return BF_images_list, ADF_images_list
+
+def acquire_series(num_frames, pixel_time_us=None, series_output=False,num_pixels=None ):
+
+    if pixel_time_us == None:
+        pixel_time = window.scanning.pixel_time_spin.value()/1e6  # gets current pixel time from UI and convert to seconds
+    else:
+        pixel_time = pixel_time_us/1e6
+
+    print("Pixel time", int(pixel_time*1e9), "ns")
+    fov = grpc_client.scanning.get_field_width()  # in microns
+    print("Field of View in um", fov)
+
+    # TODO add in option to calculate series dose?
+
+    if num_pixels == None:
+        num_pixels = 1024
+
+    BF_images_list = []
+    ADF_images_list = []
+
+
+    for frame in range(num_frames):
+        print("Acquiring frame", frame, "of", num_frames)
+        scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
+                                                   detectors=[DT.BF, DT.HAADF])
+
+        header, data = cache_client.get_item(scan_id, num_pixels**2)  # retrive image from cache
+        BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)  # reshape BF image
+        BF_images_list.append(BF_image.astype(np.float64))  # add to list
+        ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)  # reshape ADF image
+        ADF_images_list.append(ADF_image.astype(np.float64))  # add to list
+
+
+
+
+    if series_output == False:
+        print("Summed image output")
+        BF_images_array = np.asarray(BF_images_list)
+        ADF_images_array = np.asarray(ADF_images_list)
+        BF_summed = np.sum(BF_images_array, axis=0, dtype=np.float64)
+        ADF_summed = np.sum(ADF_images_array, axis=0, dtype=np.float64)
+        return BF_summed, ADF_summed
+
+    if series_output == True:
+        print("Image series output")
+        return BF_images_list, ADF_images_list
