@@ -1,7 +1,11 @@
 from datetime import datetime
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 import matplotlib.font_manager as fm
-
+import os
+import cv2 as cv2
+import fnmatch
+from tqdm import tqdm
+import easygui as g
 import numpy as np
 import scipy.constants
 #from expert_pi import grpc_client
@@ -86,7 +90,7 @@ def get_microscope_parameters(scan_width_px=None,use_precession=False,camera_fre
     "High Tension (kV)":energy/1e3,
     "Probe current (pA)" : grpc_client.illumination.get_current()*1e12,
     "Convergence semiangle (mrad)" : grpc_client.illumination.get_convergence_half_angle()*1e3,
-    "Beam diameter (d50) (nm)" : grpc_client.illumination.get_beam_diameter()*1e9,"Scan width (px)":scan_width_px,
+    "Beam diameter (d50) (nm)" : grpc_client.illumination.get_beam_diameter()*1e9,
     "FOV (um)" : fov*1e6,
     "Pixel size (nm)" : pixel_size_nm,
     "Scan width (px)":scan_width_px,
@@ -168,7 +172,6 @@ def calculate_dose_old_metadata(metadata,num_pixels): #TODO uses old metadata fo
 
     """pixel size calculation"""
     scan_fov = metadata["FOV in microns"]*1e-6
-
     pixel_size = scan_fov/num_pixels #in meters
     pixel_area = pixel_size**2
     electrons_per_meter_square_pixel = electrons_per_pixel_dwell/pixel_area
@@ -282,5 +285,35 @@ def calculate_wavelength(energy):
     wavelength = 2*np.pi/k
     return wavelength*1e12  # to picometers
 
+def import_tiff_series_basic(scan_width=None):
+    """Loads in a folder of TIFFs and creates a 4D-array for use with other functions"""
+    directory = g.diropenbox("Select directory","Select Directory")
+    if scan_width is None: #if scan width variable is empty, prompt user to enter it
+        num_files = len(fnmatch.filter(os.listdir(directory), '*.tiff')) #counts how many .tiff files are in the directory
+        guessed_scan_width = int(np.sqrt(num_files)) #assumes it is a square acquisition
+        scan_width=g.integerbox(f"Enter scan width in pixels, there are {num_files} TIFF files in this folder, "
+                                f"scan width might be {guessed_scan_width}","Enter scan width in pixels",
+                                default=guessed_scan_width)
 
+    scan_height = num_files/scan_width
+    if scan_height ==int(scan_height):
+        scan_height = int(scan_height)
+    else:
+        scan_width = g.integerbox(f"Enter scan width in pixels, previous entry was likely not correct, "
+                                  f"there are {num_files} files in this folder width {scan_width},height {scan_height}", "Enter scan width in pixels",
+                                  default=guessed_scan_width)
+
+    folder = os.listdir(directory) #formats the directory into proper syntax
+    image_list = [] #opens empty list
+    for file in tqdm(folder): #iterates through folder with a progress bar
+        path = directory+"\\"+file #picks individual images
+        if file.endswith(".tiff"):
+            image = cv2.imread(path,-1) #loads them with openCV
+            image_list.append(image) #adds them to a list of all images
+
+    array = np.asarray(image_list) #converts the list to an array
+    cam_pixels_x,cam_pixels_y = image_list[0].shape
+    reshaped_array = np.reshape(array,(scan_width,scan_height,cam_pixels_x,cam_pixels_y)) #reshapes the array to 4D dataset shape #TODO confirm ordering of scan width and height with non-square dataset
+
+    return reshaped_array #just a data array reshaped to the 4D STEM acquisition shape
 
