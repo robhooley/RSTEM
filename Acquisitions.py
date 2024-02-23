@@ -24,8 +24,41 @@ from serving_manager.api import TorchserveRestManager
 #manager.list_models()
 
 
+def acquire_focal_series(extent_nm,steps,BF=True,ADF=True,num_pixels=1024,pixel_time_us=5):
+    current_defocus = grpc_client.illumination.get_condenser_defocus()
+    lower_defocus = current_defocus-(extent_nm*1e-9/2)
+    higher_defocus = current_defocus+(extent_nm*1e-9/2)
+    defocus_intervals = np.linspace(lower_defocus,higher_defocus,steps)
+
+    image_series = []
+    for i in defocus_intervals:
+        print(f"Setting defocus to {i}")
+        grpc_client.illumination.set_condenser_defocus(i) #get correct command
+        defocus_now = grpc_client.illumination.get_defocus()
+
+        defocus_offset = defocus_now-i
+
+        print(f"Defocus now {defocus_now*1e9} nm")
+        print(f"Defocus offset {defocus_offset*1e9} nm")
+        scan_id = scan_helper.start_rectangle_scan(pixel_time=(pixel_time_us*1e-6), total_size=num_pixels, frames=1,
+                                                   detectors=(DT.BF,DT.HAADF))
+        header, data = cache_client.get_item(scan_id, num_pixels**2)  # retrive small measurements in one chunk
+
+        if BF==True and ADF_image==False:
+            BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
+            image_series.append(BF_image)
+        if ADF==True and BF == False:
+            ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
+            image_series.append(ADF_image)
+        if BF == True and ADF == True:
+            BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
+            ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
+            image_series.append((BF_image,ADF_image))
+
+    return image_series,defocus_intervals
+
 #TODO untested
-def acquire_STEM(signals = ["BF","ADF"], fov=None,pixel_time_us=None,num_pixels=None,scan_rotation=None):
+def acquire_STEM(signals = ["BF","ADF"], fov=None,pixel_time_us=None,num_pixels=1024,scan_rotation=None):
     """Acquires a single STEM image from the requested detectors
     returns a tuple with the images and the metadata in a dictionary
     Parameters
@@ -43,8 +76,6 @@ def acquire_STEM(signals = ["BF","ADF"], fov=None,pixel_time_us=None,num_pixels=
         pixel_time = pixel_time_us/1e6
     if fov is not None:
         grpc_client.scanning.set_field_width(fov) #in microns
-    if num_pixels is None:
-        num_pixels = 1024
 
     if "BF" and "ADF" in signals:
         detectors = [DT.BF,DT.HAADF]

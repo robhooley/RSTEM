@@ -364,3 +364,7 @@ def virtual_ADF(data_array):
 
     if len(VDF_list) != 0: #if the save button has been pressed
         save_list(radii,VDF_list) #save the data to disk
+
+
+file = np.load(r"O:\TEM\Applications\rob_hooley\Ptychography datasets\4D-STEM_13_12_2023 15_16.npy")
+dataviewer_4D(file)

@@ -13,14 +13,14 @@ from matplotlib.path import Path as matpath
 import fnmatch
 import matplotlib.colors as mcolors
 
-#from expert_pi import grpc_client
-#from expert_pi.controllers import scan_helper
-#from expert_pi.stream_clients import cache_client
-#from expert_pi.grpc_client.modules._common import DetectorType as DT
+from expert_pi import grpc_client
+from expert_pi.controllers import scan_helper
+from expert_pi.stream_clients import cache_client
+from expert_pi.grpc_client.modules._common import DetectorType as DT
 
 
-#from .expert_pi.RSTEM.utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar #utilities file in RSTEM directory
-from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar
+from expert_pi.RSTEM.utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar #utilities file in RSTEM directory
+#from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar
 
 def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=False):
     """Parameters

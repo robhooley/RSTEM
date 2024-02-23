@@ -8,7 +8,7 @@ from tqdm import tqdm
 import easygui as g
 import numpy as np
 import scipy.constants
-#from expert_pi import grpc_client
+from expert_pi import grpc_client
 
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None): #todo move to utilities file
     if mask_center_coordinates is None:  # use the middle of the image
