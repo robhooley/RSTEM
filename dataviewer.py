@@ -3,19 +3,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import Circle
 from matplotlib.patches import Annulus
+from matplotlib.widgets import Button, Slider
 import easygui as g
 import cv2 as cv2
-import time
 
-
-from matplotlib.widgets import Button, Slider
-
-#TODO refactor background image to navigation image
-#TODO clean up code
 
 from utilities import create_circular_mask
 
-def dataviewer_4D(data_array,background_image=None): #TODO refactor
+def dataviewer_4D(data_array,background_image=None): #TODO consider adding in scalebars
 
     def spot_marker(xposition, yposition): #sets the spot position in the virtual image
         ax[0].scatter(int(yposition.val), int(xposition.val),marker="+",c="red") #adds a red cross at user selected XY
@@ -24,21 +19,22 @@ def dataviewer_4D(data_array,background_image=None): #TODO refactor
 
     def build_VBF(dataset): #calculates a rough virtual bright field image to use as a navigation image
         intensity_list = [] #empty list to hold intensity values
+        mask = create_circular_mask(dataset_shape[2], dataset_shape[3], mask_center_coordinates=None, mask_radius=50)
         for scan_row in dataset:
             for pixel in scan_row:
-                intensity = np.sum(pixel) #sums the entire image
+                intensity = np.sum(pixel[mask]) #sums pixels inside mask
                 intensity_list.append(intensity) #adds it to the list
 
         intensity_array = np.asarray(intensity_list) #changes from list to array
         navigation_image = np.reshape(intensity_array, (dataset_shape[0], dataset_shape[1])) #reshapes the array to match dataset dimensions
 
-        return navigation_image #gives out the navgation image
+        return navigation_image #gives out the navigation image
 
     def set_axes():
         ax[0].set_aspect(1) #sets square aspect ratio for the plot
         ax[1].set_aspect(1) #sets square aspect ratio for the plot
-        ax[0].set_xlim(0, dataset_pixels[1]) #axes limited to size of dataset with no excess
-        ax[0].set_ylim(0, dataset_pixels[0]) #axes limited to size of dataset with no excess
+        ax[0].set_xlim(-1, dataset_pixels[1]) #axes limited to size of dataset with no excess
+        ax[0].set_ylim(-1, dataset_pixels[0]) #axes limited to size of dataset with no excess
         ax[1].set_xlim(0, camera_pixels[0]) #axes size limits to number of pixels in camera
         ax[1].set_ylim(0, camera_pixels[1]) # axes size limits to number of pixels in camera
         ax[0].imshow(background_image,cmap="gray") #sets the colourmap to grayscale
@@ -48,7 +44,8 @@ def dataviewer_4D(data_array,background_image=None): #TODO refactor
         ax[0].clear() #clears the old data from the navigation plot
         ax[1].clear() #clears the old data from the diffraction plot
         set_axes() #rebuilds the axes
-        ax[1].imshow(dataset[yposition.val][xposition.val],cmap="gray") #adds the new diffraction pattern
+        max_intensity = np.max(dataset[yposition.val][xposition.val])
+        ax[1].imshow(dataset[yposition.val][xposition.val],cmap="gray",vmax=max_intensity*0.75) #adds the new diffraction pattern
         ax[1].set_title(("Pattern from", int(xposition.val), int(yposition.val))) #Adds title to diffraction plot
         ax[0].set_title("Navigation image") #adds title to navigation image
         spot_marker(yposition,xposition) #adds the new spot marker in the navigation image
@@ -78,19 +75,9 @@ def dataviewer_4D(data_array,background_image=None): #TODO refactor
             plt.setp(ax, xticks=[], yticks=[]) #removes tick markers
             ax.add_patch(marker) #adds the postion marker to the navigaton image
             """handles the saving of the plot""" #TODO see if the code below works
-            #time_start = time.monotonic()
-            #canvas = FigureCanvasAgg(fig)
-            #fig.canvas.draw()
-            #annotated = canvas.buffer_rgba()
-            #annotated_VBF = np.asarray(annotated)
-            #annotated_VBF = cv2.flip(annotated_VBF,0) #flips the image to deal with some openCV related stuff #TODO check after refactor
-            #plt.close() #closes the plot as it's no longer needed
             filename_VBF = directory+f"\\VBF_x_{position[1]}_y_{position[0]}.png" #sets the filename for the navigation image
-            #cv2.imwrite(filename_VBF,annotated_VBF) #saves the navigation image
-
-
-            #filename_diffraction = directory+f"\\diffraction_x_{position[1]}_y_{position[0]}.TIFF" #filename for DP
-            #cv2.imwrite(filename_diffraction, diffraction) #saves the DP
+            filename_diffraction = directory+f"\\diffraction_x_{position[1]}_y_{position[0]}.TIFF" #filename for DP
+            cv2.imwrite(filename_diffraction, diffraction) #saves the DP
             """This does work, but needs to be flipped vertically again...""" #TODO maybe just revert?
             plt.gca().set_axis_off()
             plt.subplots_adjust(top = 1, bottom = 0, right = 1, left = 0,
@@ -98,11 +85,6 @@ def dataviewer_4D(data_array,background_image=None): #TODO refactor
             plt.margins(0,0)
             ax.invert_yaxis()
             plt.savefig(filename_VBF,bbox_inches='tight',pad_inches = 0)
-
-            end_time_savefig = time.monotonic()
-            #savefig_time = end_time_savefig - time_start
-
-            #print("time for savefig processing without diffraction", savefig_time)
 
     if type(data_array) is tuple: #checks for metadata dictionary
         dataset = data_array[0]
@@ -112,7 +94,6 @@ def dataviewer_4D(data_array,background_image=None): #TODO refactor
         dataset = data_array
         metadata=None
         print("Metadata not present")
-
 
     dataset_shape = dataset.shape #gets the shape of the incoming dataset array
     dataset_pixels = dataset_shape[0],dataset_shape[1] #works out scanning pixels
@@ -132,7 +113,8 @@ def dataviewer_4D(data_array,background_image=None): #TODO refactor
     fig, ax = plt.subplots(1,2,figsize=(20,10)) #builds a figure with 2 subplots
     set_axes() # sets the axis scales
     ax[0].scatter(0,0,marker="+",c="red") #sets an initial position marker
-    ax[1].imshow(dataset[0][0],cmap="gray") #shows the pattern from 0,0 in the DP array
+    max_intensity = np.max(dataset[0][0])
+    ax[1].imshow(dataset[0][0],cmap="gray",vmax=max_intensity*0.75) #shows the pattern from 0,0 in the DP array
     plt.setp(ax[1], xticks=[], yticks=[]) #removes the tick marks from the diffraction pattern display
     ax[1].set_title("Pattern from 0,0")  # Adds title to diffraction plot
     ax[0].set_title("Navigation image")  # adds title to navigation image
@@ -164,7 +146,7 @@ def dataviewer_4D(data_array,background_image=None): #TODO refactor
 
     dp_save_list =[] #list for diffraction patterns
     position_save_list = [] #list for xy positions
-    VBF_save_list = [] #list for navigation images #TODO rename and remove?
+    VBF_save_list = [] #list for navigation images
     savebutton.on_clicked(save)
 
     plt.show()
@@ -202,33 +184,23 @@ def virtual_ADF(data_array):
         ax[1].imshow(generated_image,cmap="gray") #sets the colourmap to grayscale
 
     def generate_image(inner_radius,outer_radius):
-        print("inner",inner_radius)
-        print("outer",outer_radius)
-        inner_mask = create_circular_mask(dataset_shape[2], dataset_shape[3],center=None,radius=inner_radius)
-        outer_mask = create_circular_mask(dataset_shape[2], dataset_shape[3],center=None,radius=outer_radius)
-        VDF_intensity_list = []
-        for scan_row in image_array:
-            for pixel in scan_row:
-                inner_intensity = np.sum(pixel[inner_mask])
-                outer_intensity = np.sum(pixel[outer_mask])
-                VDF_intensity = outer_intensity-inner_intensity
-                VDF_intensity_list.append(VDF_intensity)
-        VDF_array = np.asarray(VDF_intensity_list)
-        generated_image = np.reshape(VDF_array,(dataset_shape[0],dataset_shape[1]))
-        return generated_image
-
-    """def create_circular_mask(h, w, center=None, radius=None):
-
-        if center is None:  # use the middle of the image
-            center = (int(w / 2), int(h / 2))
-        if radius is None:  # use the smallest distance between the center and image walls
-            radius = min(center[0], center[1], w - center[0], h - center[1])
-
-        Y, X = np.ogrid[:h, :w]
-        dist_from_center = np.sqrt((X - center[0]) ** 2 + (Y - center[1]) ** 2)
-
-        mask = dist_from_center <= radius
-        return mask"""
+        if outer_radius > inner_radius:
+            inner_mask = create_circular_mask(dataset_shape[2], dataset_shape[3],mask_center_coordinates=None,mask_radius=inner_radius)
+            outer_mask = create_circular_mask(dataset_shape[2], dataset_shape[3],mask_center_coordinates=None,mask_radius=outer_radius)
+            VDF_intensity_list = []
+            for scan_row in image_array:
+                for pixel in scan_row:
+                    inner_intensity = np.sum(pixel[inner_mask])
+                    outer_intensity = np.sum(pixel[outer_mask])
+                    VDF_intensity = outer_intensity-inner_intensity
+                    VDF_intensity_list.append(VDF_intensity)
+            VDF_array = np.asarray(VDF_intensity_list)
+            generated_image = np.reshape(VDF_array,(dataset_shape[0],dataset_shape[1]))
+            return generated_image
+        else:
+            print("Outer angle cannot be smaller than or equal to inner angle")
+            blank_image = np.zeros((dataset_shape[0],dataset_shape[1]))
+            return blank_image
 
     def generating(val):
         inner_radius = inner_mask_value.val
@@ -251,7 +223,7 @@ def virtual_ADF(data_array):
         VDF_list.append(generated_image) #saves the VDF image to a list
         print("Adding image to save list")
 
-    def save_list(radii,VDF_list): #TODO fix this and tidy up
+    def save_list(radii,VDF_list):
         directory = g.diropenbox("Save directory","Save directory") #prompts users to select a folder to save into
         print("Saving data")
         for i in range(len(VDF_list)):
@@ -264,7 +236,7 @@ def virtual_ADF(data_array):
             inner = plt.Circle((256,256), radius=inner_radius,color="red",fill=None) #adds a position marker at the selected XY
             ax.add_patch(inner)
             outer = plt.Circle((256,256), radius=outer_radius,color="red",fill=None) #adds a position marker at the selected XY
-            fill = Annulus(xy=256,r=outer_radius,width=outer_radius-inner_radius,color="red",alpha=0.2)
+            fill = Annulus(xy=(256,256),r=outer_radius,width=(outer_radius-inner_radius),color="red",alpha=0.2)
             ax.add_patch(fill)
             ax.add_patch(outer)
 
@@ -273,33 +245,38 @@ def virtual_ADF(data_array):
 
             """handles the saving of the plot"""
             filename_VDF = directory+f"\\VDF_{inner_radius}to{outer_radius}.png" #sets the filename for the navigation image
-
+            filename_VDF_rescaled = directory + f"\\VDF_{inner_radius}to{outer_radius} rescaled.png"  # sets the filename for the navigation image
+            filename_DP = directory+f"\\DP_{inner_radius}to{outer_radius}.png"
             """This does work, but needs to be flipped vertically again...""" #TODO maybe just revert?
             plt.gca().set_axis_off()
             plt.subplots_adjust(top = 1, bottom = 0, right = 1, left = 0,
             hspace = 0, wspace = 0)
             plt.margins(0,0)
             #ax.invert_yaxis()
-            plt.savefig(filename_VDF,bbox_inches='tight',pad_inches = 0)
+            plt.savefig(filename_DP,bbox_inches='tight',pad_inches = 0)
             cv2.imwrite(filename_VDF,VDF.astype(np.uint16))
+            VDF_rescaled = cv2.resize(VDF.astype(np.uint16), [1024, 1024],interpolation=cv2.INTER_NEAREST)
+            cv2.imwrite(filename_VDF_rescaled, VDF_rescaled.astype(np.uint16))
 
     if type(data_array) is tuple: #checks for metadata dictionary
         image_array = data_array[0]
+        dataset_shape = image_array.shape
+        dataset_pixels = dataset_shape[0], dataset_shape[1]  # works out scanning pixels
+        camera_pixels = (dataset_shape[2], dataset_shape[3])  # works out camera resolution
         metadata = data_array[1]
         print("Metadata exists")
+        camera_angle = metadata["Diffraction semiangle (mrad)"]
+        pixels_per_mrad = camera_angle/dataset_shape[2]
     else:
         image_array = data_array
+        dataset_shape = image_array.shape
+        dataset_pixels = dataset_shape[0], dataset_shape[1]  # works out scanning pixels
+        camera_pixels = (dataset_shape[2], dataset_shape[3])  # works out camera resolution
         metadata=None
         print("Metadata not present")
 
     max_angle = math.hypot(256,256)
     min_angle = 0
-
-
-    dataset_shape = image_array.shape  # gets the shape of the incoming dataset array
-    dataset_pixels = dataset_shape[0], dataset_shape[1]  # works out scanning pixels
-    camera_pixels = (dataset_shape[2], dataset_shape[3])  # works out camera resolution
-
     # Define initial plotting space
     fig, ax = plt.subplots(1,2,figsize=(20,10)) #builds a figure with 2 subplots
     fig.suptitle("Use the sliders to set VDF mask, Use generate button to make images"
@@ -366,5 +343,5 @@ def virtual_ADF(data_array):
         save_list(radii,VDF_list) #save the data to disk
 
 
-file = np.load(r"O:\TEM\Applications\rob_hooley\Ptychography datasets\4D-STEM_13_12_2023 15_16.npy")
-dataviewer_4D(file)
+file = np.load(r"C:\Users\robert.hooley\Desktop\Coding\4D-STEM_18_12_2023 15_31.npy")
+virtual_ADF(file)

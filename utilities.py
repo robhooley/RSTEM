@@ -8,7 +8,9 @@ from tqdm import tqdm
 import easygui as g
 import numpy as np
 import scipy.constants
+import matplotlib.pyplot as plt
 from expert_pi import grpc_client
+from expert_pi.__main__ import window
 
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None): #todo move to utilities file
     if mask_center_coordinates is None:  # use the middle of the image
@@ -47,14 +49,17 @@ def get_number_of_nav_pixels(): #checked ok
 
 
 
-#TODO test new metadata function
-def get_microscope_parameters(scan_width_px=None,use_precession=False,camera_frequency_hz=None,STEM_dwell_time=None,scan_rotation=None):
+#TODO this needs to be split into sections by acquisition type and made into single layered dictionary
+#TODO set sensible decimal places
+
+def get_microscope_parameters(scan_width_px=None,use_precession=False,camera_frequency_hz=None,STEM_dwell_time=None,scan_rotation=0):
     """Extracts acquisition conditions from the microscope and stores them in a dictionary
     Parameters:
     scan_width_px: the number of pixels in the x axis
     use_precession: True or False
     camera_frequency_hz: The camera acquisition rate in FPS or Hz
     """
+
     if scan_width_px is None:
         scan_width_px = get_number_of_nav_pixels()
 
@@ -67,7 +72,9 @@ def get_microscope_parameters(scan_width_px=None,use_precession=False,camera_fre
     pixel_size_inv_angstrom = (2*grpc_client.projection.get_max_camera_angle())*1e-3/(
                 wavelength*0.01)/512 #assuming 512 pixels
 
-    camera_dwell_time = 1/camera_frequency_hz*1e3
+    if STEM_dwell_time == None: #only needed for acquisitions from the console that use the UI dwell time
+        STEM_dwell_time = window.scanning.pixel_time_spin.value() #in us
+
 
     if camera_frequency_hz == None:
         dwell_time_units = "us"
@@ -79,11 +86,12 @@ def get_microscope_parameters(scan_width_px=None,use_precession=False,camera_fre
         ADF_min = 1e3*max_angles["haadf"]["start"]
         ADF_max = 1e3*max_angles["haadf"]["end"]
     else:
+        camera_dwell_time = 1/camera_frequency_hz*1e3
         dwell_time_units = "ms"
         dwell_time = camera_dwell_time
         dwell_time_seconds = dwell_time/1e3
 
-
+    #TODO consider splitting it based on acquisition type?
 
     microscope_info = { #creates a dictionary of microscope parameters
     "Acquisition date and time":acquisition_time,
@@ -116,6 +124,20 @@ def get_microscope_parameters(scan_width_px=None,use_precession=False,camera_fre
         microscope_info["ADF outer collection semi-angle (mrad)"] = ADF_max
 
     return microscope_info
+
+def calculate_FFT(image,fov=None): #TODO refactor to be less hacky
+    dft = cv2.dft(np.float32(image), flags=cv2.DFT_COMPLEX_OUTPUT)
+    mag = cv2.magnitude(dft[:, :, 0], dft[:, :, 1])
+    result = np.fft.fftshift(mag)
+
+    cv2.log(result, result)
+    result = cv2.addWeighted(result, alpha=65535/result.max(), src2=result, beta=0, gamma=0, dtype=cv2.CV_16U)
+    if fov is not None:
+        pixel_size = fov/image.shape[0]
+        inverse_pixel_size = 1/pixel_size
+        fig,ax = plt.subplot()
+    #TODO take field of view and make the FFT spatially calibrated
+    return result
 
 def calculate_dose_from_ui_old(): # TODO deprecate
     """This extracts the information from the ExpertPI interface and calculates the dose"""
@@ -207,7 +229,7 @@ def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose
     if metadata is None:
         current_state = get_microscope_parameters()
         probe_current = current_state["Probe current (pA)"]*1e-12  # in amps
-        scan_fov = current_state["FOV um"]*1e-6
+        scan_fov = current_state["FOV (um)"]*1e-6
         dwell_time_seconds = current_state["Dwell time (s)"]
         print("Taking dwell time from UI window, may be different than acquisition conditions")
         probe_size = current_state["Beam diameter (d50) (nm)"]*1e-9  # in meters
@@ -216,7 +238,7 @@ def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose
 
     else:
         probe_current = metadata["Probe current (pA)"]*1e-12 #in amps
-        scan_fov = metadata["FOV um"]*1e-6
+        scan_fov = metadata["FOV (um)"]*1e-6
         dwell_time_seconds = metadata["Dwell time (s)"]
         probe_size = metadata["Beam diameter (d50) (nm)"]*1e-9 #in meters
         num_pixels = metadata["Scan width (px)"]
