@@ -17,7 +17,7 @@ import json
 from serving_manager.api import registration_model
 from serving_manager.api import super_resolution_model
 from serving_manager.api import TorchserveRestManager
-
+from stem_measurements.shift_measurements import get_offset_of_pictures
 from expert_pi.RSTEM.utilities import get_microscope_parameters
 #registration_model(np.concatenate([original_image,translated_image],axis=1, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
 #registration_model(image, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
@@ -26,8 +26,16 @@ from expert_pi.RSTEM.utilities import get_microscope_parameters
 #manager.infer(image=image, model_name='spot_segmentation') #spot detection
 #manager.list_models()
 
-#Tested works fine
-#TODO sensible decimal places
+
+host_F4 = ""
+host_P3 = "172.20.32.1" #TODO confirm
+host_P2 = ""
+host_global = '172.16.2.86'
+
+
+host = host_global
+
+#TODO test with new rounded defocus offset numbers
 def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pixel_time_us=5):
     """Parameters
     extent_nm: Range the focal series should cover split equally around the current focus value
@@ -46,13 +54,13 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pi
     defocus_offsets = []
     print("Acquiring defocus series")
     for i in tqdm(defocus_intervals):
-        #print(f"Setting defocus")
+
         grpc_client.illumination.set_condenser_defocus(i,CFT.C3) #get correct command
         defocus_now = grpc_client.illumination.get_condenser_defocus(CFT.C3)
 
-        defocus_offset = current_defocus-defocus_now
-        defocus_offsets.append(defocus_offset)
-        #print(f"Defocus offset {defocus_offset*1e9} nm")
+        defocus_offset = current_defocus-defocus_now #this will be in meters
+        defocus_offset_nm = defocus_offset*1e9
+        defocus_offsets.append(np.round(defocus_offset_nm,decimals=1))
 
         scan_id = scan_helper.start_rectangle_scan(pixel_time=(pixel_time_us*1e-6), total_size=num_pixels, frames=1,
                                                    detectors=(DT.BF,DT.HAADF))
@@ -136,7 +144,7 @@ def acquire_STEM(BF=True,ADF=False, fov_um=None,pixel_time_us=None,num_pixels=10
         ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
         return(ADF_image,metadata)
 
-#TODO tested ok
+#tested ok
 def save_STEM(image,metadata=None,name=None,folder=None):
     """Parameters
     image: single array to be saved as a .tiff image
@@ -163,8 +171,9 @@ def save_STEM(image,metadata=None,name=None,folder=None):
 
 
 
-#TODO test again
-def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,series_output=False,num_pixels=None):
+#tested ok without scan rotation
+#TODO reintroduce scan rotation
+def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None,scan_rotation=0):
     #scan_rotation=0 #TODO is this scan rotation part really needed?
     #R = np.array([[np.cos(scan_rotation), np.sin(scan_rotation)],
     #              [-np.sin(scan_rotation), np.cos(scan_rotation)]])
@@ -200,8 +209,8 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,series_output=Fals
     ADF_images_list.append(initial_ADF_image)
     image_offsets.append(initial_shift)
 
-    for frame in range(num_frames):
-        print("Acquiring frame",frame,"of",num_frames)
+    for frame in tqdm(range(num_frames)):
+        #print("Acquiring frame",frame,"of",num_frames)
         scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
                                                    detectors=[DT.BF, DT.HAADF])
 
@@ -212,31 +221,28 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,series_output=Fals
         ADF_images_list.append(ADF_image.astype(np.float64)) #add to list
 
         s = grpc_client.illumination.get_shift(grpc_client.illumination.DeflectorType.Scan) #get current beam shifts
-        print(s["x"],"X deflectors")
-        print(s["y"],"Y deflectors")
+        #print(s["x"],"X deflectors")
+        #print(s["y"],"Y deflectors")
         # apply drift correction between images:
-        registration = registration_model(np.concatenate([BF_images_list[-1],BF_image],axis=1), 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #measure offset of images
+        registration = registration_model(np.concatenate([BF_images_list[-1],BF_image],axis=1),
+                                          'TEMRegistration', host=host, port='7443',
+                                          image_encoder='.tiff') #measure offset of images
         raw_shift = registration[0]["translation"]
         real_shift_x = raw_shift[0]*fov #shifts normalised between 0,1 proportion of image, convert to meters
         real_shift_y = raw_shift[1]*fov
-        print(raw_shift)
-        print("X shift m",real_shift_x)
-        print("Y shift m",real_shift_y)
+        #print(raw_shift)
+        #print("X shift m",real_shift_x)
+        #print("Y shift m",real_shift_y)
         #shift = np.dot(R, shift)  # rotate shifts back to scanning axes
         #print(i, (s0['x'] - s['x']) * 1e9, (s0['y'] - s['y']) * 1e9)
         grpc_client.illumination.set_shift(
                 {"x": s['x'] + real_shift_x , "y": s['y'] + real_shift_y },grpc_client.illumination.DeflectorType.Scan) #apply shifts in microns to existing shifts
 
+    print("Post acquisition correction")
+    aligned_BF_series,summed_BF,_ = align_series_ML(BF_images_list)
+    aligned_ADF_series,summed_ADF,_ = align_series_ML(ADF_images_list)
 
-    fine_aligned_BF,summed_BF,_ = align_series(BF_images_list)
-    fine_aligned_ADF,summed_ADF,_ = align_series(ADF_images_list)
-
-
-
-
-
-    print("Image series output")
-    return fine_aligned_BF,summed_BF, fine_aligned_ADF, summed_ADF
+    return (aligned_BF_series,summed_BF), (aligned_ADF_series, summed_ADF)
 
 def acquire_series(num_frames, pixel_time_us=None, series_output=False,num_pixels=None ):
     if pixel_time_us == None:
@@ -281,7 +287,7 @@ def acquire_series(num_frames, pixel_time_us=None, series_output=False,num_pixel
         print("Image series output")
         return BF_images_list, ADF_images_list
 
-def align_series(image_series): #single series in a list
+def align_series_ML(image_series): #single series in a list
 
     initial_image = image_series[0]
     initial_image_shape = initial_image.shape
@@ -289,7 +295,7 @@ def align_series(image_series): #single series in a list
     translated_list = []
     for image in tqdm(range(len(image_series))):
         translated_image = image_series[image].astype(np.float64)
-        registration_values = registration_model(np.concatenate([initial_image,translated_image],axis=1), 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.tiff')
+        registration_values = registration_model(np.concatenate([initial_image,translated_image],axis=1), 'TEMRegistration', host=host, port='7443', image_encoder='.tiff')
         translation_values = registration_values[0]["translation"] #normalised between 0,1
         x_pixels_shift = translation_values[0]*initial_image_shape[0]
         y_pixels_shift = translation_values[1]*initial_image_shape[1]
@@ -301,6 +307,23 @@ def align_series(image_series): #single series in a list
 
     summing_array = np.asarray(translated_list)
     summed_image = np.sum(summing_array, 0, dtype=np.float64)
-
-    #summed_image.astype(np.float64)
     return translated_list,summed_image,shifts
+
+def align_series_cross_correlation(image_series):
+    initial_image = image_series[0]
+    initial_image_shape = initial_image.shape
+    fov_px = initial_image_shape[0]
+    offsets = []
+    correlation_coefficients = []
+    translated_list = []
+    for image in tqdm(range(len(image_series))):
+        offset,coeffs = get_offset_of_pictures(initial_image,image_series[image],fov=fov_px,get_corr_coeff=True)
+        offsets.append(offset)
+        correlation_coefficients.append(coeffs)
+        x_pixels_shift = offset[0]
+        y_pixels_shift = offset[1]
+        shift_matrix = np.float32([[1,0,x_pixels_shift],[0,1,y_pixels_shift]])
+        translated_image = cv2.warpAffine(image_series[image].astype(np.uint16),shift_matrix,(initial_image_shape[1],initial_image_shape[0]))
+        translated_list.append(translated_image)
+
+    return translated_list,offsets,correlation_coefficients
