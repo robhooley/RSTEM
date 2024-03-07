@@ -173,20 +173,17 @@ def save_STEM(image,metadata=None,name=None,folder=None):
 
 #tested ok without scan rotation
 #TODO reintroduce scan rotation
-def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None,scan_rotation=0):
-    #scan_rotation=0 #TODO is this scan rotation part really needed?
-    #R = np.array([[np.cos(scan_rotation), np.sin(scan_rotation)],
-    #              [-np.sin(scan_rotation), np.cos(scan_rotation)]])
-    #grpc_client.scanning.set_rotation(scan_rotation)
+def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None):
+    """Parameters
+    num_frames : integer number of frames to acquire
+    pixel_time_us: pixel dwell time in microseconds
+    num_pixels: number of pixels in scanned image
+    Set the FOV and illumination conditions before calling the function, it will use whatever is set in the UI"""
 
     if pixel_time_us==None:
         pixel_time = window.scanning.pixel_time_spin.value()/1e6  # gets current pixel time from UI and convert to seconds
     else:
         pixel_time = pixel_time_us/1e6
-
-    print("Pixel time",int(pixel_time*1e9),"ns")
-    fov = grpc_client.scanning.get_field_width() #in meters
-    print("Field of View in m",fov)
 
     if num_pixels == None:
         num_pixels = 1024
@@ -209,8 +206,8 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None,sc
     ADF_images_list.append(initial_ADF_image)
     image_offsets.append(initial_shift)
 
-    for frame in tqdm(range(num_frames)):
-        #print("Acquiring frame",frame,"of",num_frames)
+    for frame in range(num_frames):
+        print("Acquiring frame",frame,"of",num_frames)
         scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
                                                    detectors=[DT.BF, DT.HAADF])
 
@@ -221,8 +218,6 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None,sc
         ADF_images_list.append(ADF_image.astype(np.float64)) #add to list
 
         s = grpc_client.illumination.get_shift(grpc_client.illumination.DeflectorType.Scan) #get current beam shifts
-        #print(s["x"],"X deflectors")
-        #print(s["y"],"Y deflectors")
         # apply drift correction between images:
         registration = registration_model(np.concatenate([BF_images_list[-1],BF_image],axis=1),
                                           'TEMRegistration', host=host, port='7443',
@@ -230,15 +225,10 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None,sc
         raw_shift = registration[0]["translation"]
         real_shift_x = raw_shift[0]*fov #shifts normalised between 0,1 proportion of image, convert to meters
         real_shift_y = raw_shift[1]*fov
-        #print(raw_shift)
-        #print("X shift m",real_shift_x)
-        #print("Y shift m",real_shift_y)
-        #shift = np.dot(R, shift)  # rotate shifts back to scanning axes
-        #print(i, (s0['x'] - s['x']) * 1e9, (s0['y'] - s['y']) * 1e9)
         grpc_client.illumination.set_shift(
                 {"x": s['x'] + real_shift_x , "y": s['y'] + real_shift_y },grpc_client.illumination.DeflectorType.Scan) #apply shifts in microns to existing shifts
 
-    print("Post acquisition correction")
+    print("Post acquisition fine correction")
     aligned_BF_series,summed_BF,_ = align_series_ML(BF_images_list)
     aligned_ADF_series,summed_ADF,_ = align_series_ML(ADF_images_list)
 
@@ -286,6 +276,78 @@ def acquire_series(num_frames, pixel_time_us=None, series_output=False,num_pixel
     if series_output == True:
         print("Image series output")
         return BF_images_list, ADF_images_list
+
+
+# tested ok without scan rotation
+# TODO reintroduce scan rotation
+#TODO untested
+def ML_drift_corrected_imaging_with_scan_rotation(num_frames, pixel_time_us=None, num_pixels=None, scan_rotation=0):
+    R = np.array([[np.cos(scan_rotation), np.sin(scan_rotation)],
+                  [-np.sin(scan_rotation), np.cos(scan_rotation)]])
+
+    if scan_rotation is not None:
+        grpc_client.scanning.set_rotation(scan_rotation)
+
+    if pixel_time_us == None:
+        pixel_time = window.scanning.pixel_time_spin.value()/1e6  # gets current pixel time from UI and convert to seconds
+    else:
+        pixel_time = pixel_time_us/1e6
+
+    if num_pixels == None:
+        num_pixels = 1024
+
+    BF_images_list = []
+    ADF_images_list = []
+    image_offsets = []
+
+    fov = grpc_client.scanning.get_field_width()
+
+    initial_scan = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
+                                                    detectors=[DT.BF, DT.HAADF])
+    header, data = cache_client.get_item(initial_scan, num_pixels**2)  # retrive small measurements in one chunk
+
+    initial_shift = grpc_client.illumination.get_shift(grpc_client.illumination.DeflectorType.Scan)
+
+    initial_BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
+    BF_images_list.append(initial_BF_image)
+    initial_ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
+    ADF_images_list.append(initial_ADF_image)
+    image_offsets.append(initial_shift)
+
+    for frame in range(num_frames):
+        print("Acquiring frame", frame, "of", num_frames)
+        scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
+                                                   detectors=[DT.BF, DT.HAADF])
+
+        header, data = cache_client.get_item(scan_id, num_pixels**2)  # retrive image from cache
+        BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)  # reshape BF image
+        BF_images_list.append(BF_image.astype(np.float64))  # add to list
+        ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)  # reshape ADF image
+        ADF_images_list.append(ADF_image.astype(np.float64))  # add to list
+
+        s = grpc_client.illumination.get_shift(grpc_client.illumination.DeflectorType.Scan)  # get current beam shifts
+        # apply drift correction between images:
+        registration = registration_model(np.concatenate([BF_images_list[-1], BF_image], axis=1),
+                                          'TEMRegistration', host=host, port='7443',
+                                          image_encoder='.tiff')  # measure offset of images
+        raw_shift = registration[0]["translation"]
+        real_shift_x = raw_shift[0]*fov  # shifts normalised between 0,1 proportion of image, convert to meters
+        real_shift_y = raw_shift[1]*fov
+
+        shift = np.dot(R, (real_shift_x,real_shift_y))  # rotate shifts back to scanning axes
+        # print(i, (s0['x'] - s['x']) * 1e9, (s0['y'] - s['y']) * 1e9)
+        grpc_client.illumination.set_shift(
+                {"x": s['x'] + shift[0], "y": s['y'] + shift[1]},
+                grpc_client.illumination.DeflectorType.Scan)  # apply shifts in microns to existing shifts
+
+    print("Post acquisition correction")
+    aligned_BF_series, summed_BF, _ = align_series_ML(BF_images_list)
+    aligned_ADF_series, summed_ADF, _ = align_series_ML(ADF_images_list)
+
+    return (aligned_BF_series, summed_BF), (aligned_ADF_series, summed_ADF)
+
+
+
 
 def align_series_ML(image_series): #single series in a list
 
