@@ -42,7 +42,7 @@ def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=Fals
     scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(1/camera_frequency_hz, 8), total_size=scan_width_px, frames=1, detectors=[DT.Camera], is_precession_enabled=use_precession)
     print("Acquiring",scan_width_px,"x",scan_width_px,"px dataset at",camera_frequency_hz,"frames per second")
     image_list = [] #empty list to take diffraction data
-    for i in tqdm(range(scan_width_px),desc="Retrieving data from cache",total=scan_width_px**2,unit="frames"): #retrives data one scan row at a time to avoid crashes
+    for i in tqdm(range(scan_width_px),desc="Retrieving data from cache",total=scan_width_px,unit="chunks"): #retrives data one scan row at a time to avoid crashes
         #print("getting data", i, "/", scan_width_px)
         header, data = cache_client.get_item(scan_id, scan_width_px)  # cache retrieval in rows
         camera_size = data["cameraData"].shape[1],data["cameraData"].shape[2] #gets shape of diffraction patterns
@@ -346,17 +346,12 @@ def import_tiff_series(scan_width=None):
     if scan_width is None: #if scan width variable is empty, prompt user to enter it
         num_files = len(fnmatch.filter(os.listdir(directory), '*.tiff')) #counts how many .tiff files are in the directory
         guessed_scan_width = int(np.sqrt(num_files)) #assumes it is a square acquisition
-        scan_width=g.integerbox(f"Enter scan width in pixels, there are {num_files} TIFF files in this folder, "
+        scan_width=g.enterbox(f"Enter scan width in pixels, there are {num_files} TIFF files in this folder, "
                                 f"scan width might be {guessed_scan_width}","Enter scan width in pixels",
-                                default=guessed_scan_width)
+                                default=str(guessed_scan_width))
 
-    scan_height = num_files/scan_width
-    if type(scan_height) is not int:
-        scan_width = g.integerbox(f"Enter scan width in pixels, previous entry was likely not correct, "
-                                  f"there are {num_files} files in this folder", "Enter scan width in pixels",
-                                  default=guessed_scan_width)
-
-
+        scan_width=int(scan_width)
+        scan_height = int(num_files/scan_width)
     load_metadata = g.ynbox("Do you want to load the metadata .JSON file?","Do you want to load the metadata"
                                                                            " .JSON file")
     if load_metadata == False:

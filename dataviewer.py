@@ -7,8 +7,9 @@ from matplotlib.widgets import Button, Slider
 import easygui as g
 import cv2 as cv2
 
+from expert_pi.RSTEM.utilities import get_microscope_parameters,create_circular_mask
 
-from utilities import create_circular_mask
+#from utilities import create_circular_mask
 
 def dataviewer_4D(data_array,background_image=None): #TODO consider adding in scalebars
 
@@ -341,7 +342,3 @@ def virtual_ADF(data_array):
 
     if len(VDF_list) != 0: #if the save button has been pressed
         save_list(radii,VDF_list) #save the data to disk
-
-
-file = np.load(r"C:\Users\robert.hooley\Desktop\Coding\4D-STEM_18_12_2023 15_31.npy")
-virtual_ADF(file)

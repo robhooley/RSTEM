@@ -221,7 +221,7 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None):
         # apply drift correction between images:
         registration = registration_model(np.concatenate([BF_images_list[-1],BF_image],axis=1),
                                           'TEMRegistration', host=host, port='7443',
-                                          image_encoder='.tiff') #measure offset of images
+                                          image_encoder='.tiff') #measure offset of images # TODO corrects to first image, should it correct to previous image?
         raw_shift = registration[0]["translation"]
         real_shift_x = raw_shift[0]*fov #shifts normalised between 0,1 proportion of image, convert to meters
         real_shift_y = raw_shift[1]*fov
@@ -234,7 +234,7 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None):
 
     return (aligned_BF_series,summed_BF), (aligned_ADF_series, summed_ADF)
 
-def acquire_series(num_frames, pixel_time_us=None, series_output=False,num_pixels=None ):
+def acquire_series(num_frames, pixel_time_us=None,num_pixels=None ):
     if pixel_time_us == None:
         pixel_time = window.scanning.pixel_time_spin.value()/1e6  # gets current pixel time from UI and convert to seconds
     else:
@@ -262,22 +262,7 @@ def acquire_series(num_frames, pixel_time_us=None, series_output=False,num_pixel
         ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)  # reshape ADF image
         ADF_images_list.append(ADF_image.astype(np.float64))  # add to list
 
-
-
-
-    if series_output == False:
-        print("Summed image output")
-        BF_images_array = np.asarray(BF_images_list)
-        ADF_images_array = np.asarray(ADF_images_list)
-        BF_summed = np.sum(BF_images_array, axis=0, dtype=np.float64)
-        ADF_summed = np.sum(ADF_images_array, axis=0, dtype=np.float64)
-        return BF_summed, ADF_summed
-
-    if series_output == True:
-        print("Image series output")
-        return BF_images_list, ADF_images_list
-
-
+    return BF_images_list
 # tested ok without scan rotation
 # TODO reintroduce scan rotation
 #TODO untested
