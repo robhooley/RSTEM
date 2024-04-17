@@ -249,3 +249,9 @@ def produce_spectrum(map_data=None):
     energies = np.concatenate([e[0] for e in edx_data])
     pixels = np.concatenate([e[1] for e in edx_data])
 
+    histogram,bin_edges = np.histogram(energies,bins=2000,range=(0,20000))
+    bincenters = np.mean(np.vstack([bin_edges[0:-1], bin_edges[1:]]), axis=0)
+
+    plt.bar(histogram,bincenters)
+
+
