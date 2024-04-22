@@ -1,19 +1,20 @@
 import os
 
-from expert_pi import grpc_client
-from expert_pi.controllers import scan_helper
-from expert_pi.stream_clients import cache_client
+#from expert_pi import grpc_client
+#from expert_pi.controllers import scan_helper
+#from expert_pi.stream_clients import cache_client
 from stem_measurements import shift_measurements
 import pickle
+from time import sleep
 import numpy as np
-from expert_pi.grpc_client.modules.scanning import DetectorType as DT
+#from expert_pi.grpc_client.modules.scanning import DetectorType as DT
 import easygui as g
 import cv2 as cv2
 from tqdm import tqdm
 import scipy.signal
 import matplotlib.pyplot as plt
+from grid_strategy import strategies
 from PIL import Image
-import numba
 from serving_manager.api import registration_model
 from stem_measurements import edx_processing
 
@@ -30,7 +31,7 @@ host = host_global
 #TODO untested
 #TODO check reasonable map sizes with RAM usage
 
-def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixels=1024,drift_correction_method="patches",tracking_image="BF"):
+def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixels=1024,drift_correction_method="patches"):
     """Parameters
     frames: number of scans
     pixel_time: in seconds
@@ -49,7 +50,22 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
     if fov is None:
         fov=grpc_client.scanning.get_field_width() #in meters
     if fov is not None:
-        grpc_client.scanning.set_field_width(fov) #convert microns to meters
+        grpc_client.scanning.set_field_width(fov) #in meters
+
+    if grpc_client.stem_detector.get_is_inserted(DT.BF) is True and grpc_client.stem_detector.get_is_inserted(
+                DT.HAADF) is False:
+        tracking_signal = "BF"
+    if grpc_client.stem_detector.get_is_inserted(DT.BF) is False and grpc_client.stem_detector.get_is_inserted(
+            DT.HAADF) is False:
+        tracking_signal = "BF"
+        grpc_client.projection.set_is_off_axis_stem_enabled(True) #use off axis BF for tracking if both detectors are out
+    if grpc_client.stem_detector.get_is_inserted(DT.BF) is False and grpc_client.stem_detector.get_is_inserted(
+            DT.HAADF) is True:
+        tracking_signal = "HAADF"
+    if grpc_client.stem_detector.get_is_inserted(DT.BF) is True and grpc_client.stem_detector.get_is_inserted(
+            DT.HAADF) is True:
+        tracking_signal = "HAADF"
+    print(f"Image tracking using {tracking_signal} images")
 
     map_data = []
     scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1, detectors=[DT.BF, DT.HAADF, DT.EDX1, DT.EDX0])
@@ -60,16 +76,21 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
     with open(f"{folder}{file_name}_0.pdat", "wb") as f:
         pickle.dump(map_data[0], f) #first item from map data list of scans
 
-    if tracking_image == "BF" or "bf":
-        tracking_signal= "BF"
-    elif tracking_image == "ADF" or "HAADF" or "adf" or "haadf":
-        tracking_signal = "HAADF"
 
+    image_list = []
     anchor_image = data["stemData"][tracking_signal].reshape(num_pixels, num_pixels)
+    image_list.append(anchor_image)
 
-    if drift_correction_method is not "patches" or "Patches" or "ML":
-        print("Drift correction method",drift_correction_method)
+    if drift_correction_method == "ML":
+        drift_correction_method_named = "TESCAN's machine learning"
+    if drift_correction_method == "patches" or "Patches":
+        drift_correction_method_named = "OpenCV sub-image template matching"
+
+    if drift_correction_method != "patches" or "Patches" or "ML":
         print("Drift correction is not being performed")
+    print(f"Drift correction is using {drift_correction_method_named} for image registration")
+
+
 
     for i in range(1, frames):
         scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1, detectors=[DT.BF, DT.HAADF, DT.EDX1, DT.EDX0])
@@ -87,17 +108,19 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
                                               'TEMRegistration', host=host, port='7443',
                                               image_encoder='.tiff')  # measure offset of images # TODO corrects to first image, should it correct to previous image?
             raw_shift = registration[0]["translation"]
-            real_shift_x = raw_shift[0]*fov  # shifts normalised between 0,1 proportion of image, convert to meters
-            real_shift_y = raw_shift[1]*fov
-            grpc_client.illumination.set_shift({"x": current_shift['x'] + real_shift_x, "y": current_shift['y'] + real_shift_y},grpc_client.illumination.DeflectorType.Scan)  # apply shifts in microns to existing shifts
+            #real_shift_x = raw_shift[0]*fov  # shifts normalised between 0,1 proportion of image, convert to meters
+            #real_shift_y = raw_shift[1]*fov
+            shift_offset = (raw_shift[0]*fov,raw_shift[1]*fov)
+            grpc_client.illumination.set_shift({"x": current_shift['x'] + shift_offset[0], "y": current_shift['y'] + shift_offset[1]},grpc_client.illumination.DeflectorType.Scan)  # apply shifts in microns to existing shifts #TODO check if this should be - shift or + shift
+            print(f"frame {i}, X shift {current_shift['x'] + shift_offset[0]*1e9} nm, Y shift {current_shift['y'] + shift_offset[1]*1e9} nm")
         if drift_correction_method == "patches" or "Patches":
-            shift_offset = shift_measurements.get_offset_of_pictures(anchor_image, series_image, fov, method=shift_measurements.Method.PatchesPass2)
+            shift_offset = shift_measurements.get_offset_of_pictures(anchor_image, series_image, fov, method=shift_measurements.Method.PatchesPass2) # TODO corrects to first image, should it correct to previous image?
             shift_offset = np.dot(R, shift_offset)  # rotate back
-            print(f"frame {i}, X shift {current_shift['x'] - shift_offset[0]*1e9} nm, Y shift {current_shift['y'] - shift_offset[1]*1e9} nm")
-            grpc_client.illumination.set_shift({"x": current_shift['x'] - shift_offset[0], "y": current_shift['y'] - shift_offset[1]}, grpc_client.illumination.DeflectorType.Scan)
+            print(f"frame {i}, X shift {current_shift['x'] + shift_offset[0]*1e9} nm, Y shift {current_shift['y'] + shift_offset[1]*1e9} nm")
+            grpc_client.illumination.set_shift({"x": current_shift['x'] + shift_offset[0], "y": current_shift['y'] + shift_offset[1]}, grpc_client.illumination.DeflectorType.Scan) #TODO check if it should be - or + shifts
         else:
             pass
-
+        image_list.append(series_image)
         map_data.append((header,data,current_shift))
 
 
@@ -117,19 +140,21 @@ def sketchy_map_processing(map_data=None,elements=[""]):
         file_path = os.listdir(data_folder)
         for file in tqdm(file_path):  # iterates through folder with a progress bar
             path = data_folder + "\\" + file  # picks individual images
-            #print(path)
             if file.endswith(".pdat"):
                 with open(path, "rb") as f:
                     header, data, s0 = pickle.load(f)
             map_data.append((header,data))
                 #TODO untested
     scan_pixels = map_data[0][0]["scanDimensions"]
+    num_frames = len(map_data)
+
     for i in range(len(map_data)): #map data stored as tuple of (header,data,shifts)
         frame = map_data[i]
         data = frame[1]
         edx_data.append(data["edxData"]["EDX0"]["energy"])
         edx_data.append(data["edxData"]["EDX1"]["energy"])
         BFs.append(data["stemData"]["BF"].reshape(scan_pixels[1], scan_pixels[2]))
+        ADFs.append(data["stemData"]["HAADF"].reshape(scan_pixels[1], scan_pixels[2]))
 
     energies = np.concatenate([e[0] for e in edx_data])
     pixels = np.concatenate([e[1] for e in edx_data])
@@ -193,14 +218,35 @@ def sketchy_map_processing(map_data=None,elements=[""]):
 
     # plot them
 
-    f, ax = plt.subplots(4, 5, sharex=True, sharey=True)
-    i = 0
+    num_maps = len(imgs_all)
+
+    imgs_list = []
+    names_list = []
     for name in imgs_all.keys():
         img = imgs_all[name]
-        ax[i%4, i//4].set_title(name)
-        ax[i%4, i//4].imshow(img)
-        i += 1
+        imgs_list.append(img)
+        names_list.append(name)
+
+        #ax[i%4, i//4].set_title(name)
+        #ax[i%4, i//4].imshow(img)
+
+
+    specs = strategies.SquareStrategy("center").get_grid(num_maps)
+
+    for i,subplot in enumerate(specs):
+        plt.subplot(subplot)
+        ax = plt.gca()
+        image = imgs_list[i]
+        name = names_list[i]
+        ax.imshow(image)
+        ax.set_title(name)
     plt.show()
+
+    """    f, ax = plt.subplots(4, 5, sharex=True, sharey=True)
+    i = 0
+    
+        i += 1"""
+
 
     # saving:
     save_folder = g.diropenbox("Select folder to save maps into")
@@ -211,20 +257,16 @@ def sketchy_map_processing(map_data=None,elements=[""]):
         im.save(save_folder + '/' + str(name) + '.tif')
 
 
-    """im = Image.fromarray(data["stemData"]["BF"].reshape(1024, 1024))
-    im.save(save_folder + '/BF.tif')
+    BF = BFs[0]
+    cv2.imwrite(save_folder + '/BF_0.tif',BF)
 
-    BF_summed = (np.sum(BFs, axis=0).reshape(1024, 1024)/total_frames).astype("uint16")
-    im = Image.fromarray(BF_summed)
-    im.save(save_folder + '/BF_summed.tif')
+    HAADF = ADFs[0]
+    cv2.imwrite(save_folder + '/HAADF_0.tif',HAADF)
 
-    im = Image.fromarray(data["stemData"]["HAADF"].reshape(1024, 1024))
-    im.save(save_folder + '/HAADF.tif')"""
 
-def produce_spectrum(map_data=None):
+
+def produce_spectrum(map_data=None,elements=None):
     edx_data = []
-    BFs = []
-    ADFs = []
 
     print("loading data")
     if map_data == None:
@@ -233,25 +275,26 @@ def produce_spectrum(map_data=None):
         file_path = os.listdir(data_folder)
         for file in tqdm(file_path):  # iterates through folder with a progress bar
             path = data_folder + "\\" + file  # picks individual images
-            #print(path)
+            print(path)
             if file.endswith(".pdat"):
                 with open(path, "rb") as f:
                     header, data, s0 = pickle.load(f)
-            map_data.append((header,data))
+                    map_data.append((header,data))
 
     for i in range(len(map_data)): #map data stored as tuple of (header,data,shifts)
         frame = map_data[i]
         data = frame[1]
         edx_data.append(data["edxData"]["EDX0"]["energy"])
         edx_data.append(data["edxData"]["EDX1"]["energy"])
-        BFs.append(data["stemData"]["BF"].reshape(1024, 1024))
 
     energies = np.concatenate([e[0] for e in edx_data])
-    pixels = np.concatenate([e[1] for e in edx_data])
-
-    histogram,bin_edges = np.histogram(energies,bins=2000,range=(0,20000))
-    bincenters = np.mean(np.vstack([bin_edges[0:-1], bin_edges[1:]]), axis=0)
-
-    plt.bar(histogram,bincenters)
+    #pixels = np.concatenate([e[1] for e in edx_data])
 
 
+
+    histogram,bin_edges = np.histogram(energies,bins=4000,range=(0,20000))
+    plt.stairs(histogram,bin_edges)
+
+    plt.show()
+
+produce_spectrum()
