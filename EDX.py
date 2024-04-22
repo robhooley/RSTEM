@@ -123,13 +123,13 @@ def sketchy_map_processing(map_data=None,elements=[""]):
                     header, data, s0 = pickle.load(f)
             map_data.append((header,data))
                 #TODO untested
-
+    scan_pixels = map_data[0][0]["scanDimensions"]
     for i in range(len(map_data)): #map data stored as tuple of (header,data,shifts)
         frame = map_data[i]
         data = frame[1]
         edx_data.append(data["edxData"]["EDX0"]["energy"])
         edx_data.append(data["edxData"]["EDX1"]["energy"])
-        BFs.append(data["stemData"]["BF"].reshape(1024, 1024))
+        BFs.append(data["stemData"]["BF"].reshape(scan_pixels[1], scan_pixels[2]))
 
     energies = np.concatenate([e[0] for e in edx_data])
     pixels = np.concatenate([e[1] for e in edx_data])
@@ -165,7 +165,7 @@ def sketchy_map_processing(map_data=None,elements=[""]):
 
     # now we remap the energy events to the probabilities of the element (it is same as linear fitting):
     batch = 400_000
-    channels = np.zeros((N, 1024*1024))
+    channels = np.zeros((N, (scan_pixels[1]* scan_pixels[2])))
 
     i = 0
     while i < len(energies):
@@ -173,7 +173,7 @@ def sketchy_map_processing(map_data=None,elements=[""]):
         channels[:, pixels[i:i + batch]] += np.dot(Mi, probabilities)
         i += batch
         print(f"energies->elements {i/len(energies)*100:6.3f}%", end="\r")
-    channels = channels.reshape(N, 1024, 1024)
+    channels = channels.reshape(N, scan_pixels[1], scan_pixels[2])
 
     # filter images
     median_filter = 5
