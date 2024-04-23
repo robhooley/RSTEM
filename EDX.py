@@ -11,12 +11,17 @@ import numpy as np
 import easygui as g
 import cv2 as cv2
 from tqdm import tqdm
+import matplotlib.colors as mcolors
+import xraydb as xdb
 import scipy.signal
 import matplotlib.pyplot as plt
 from grid_strategy import strategies
 from PIL import Image
 from serving_manager.api import registration_model
 from stem_measurements import edx_processing
+
+#import utilities
+from utilities import generate_colorlist,generate_colormaps
 
 host_F4 = ""
 host_P3 = "172.20.32.1" #TODO confirm
@@ -143,7 +148,8 @@ def sketchy_map_processing(map_data=None,elements=[""]):
             if file.endswith(".pdat"):
                 with open(path, "rb") as f:
                     header, data, s0 = pickle.load(f)
-            map_data.append((header,data))
+                    map_data.append((header,data))
+
                 #TODO untested
     scan_pixels = map_data[0][0]["scanDimensions"]
     num_frames = len(map_data)
@@ -171,7 +177,7 @@ def sketchy_map_processing(map_data=None,elements=[""]):
         return result/np.sum(result)
 
     # generate gaussians for each line of elements:
-    lines = edx_processing.get_edx_filters(elements)
+    lines = get_xray_lines(elements)#edx_processing.get_edx_filters(elements)
     E = np.array(range(0, 2**16))  # max energy 2**16 kV
     bases = []
     for name, value in lines.items():
@@ -233,12 +239,20 @@ def sketchy_map_processing(map_data=None,elements=[""]):
 
     specs = strategies.SquareStrategy("center").get_grid(num_maps)
 
+    """cm = []
+    n_bin = 100
+    for color in colour_list:
+        colors_ = [mcolors.to_rgb('black'), mcolors.to_rgb(color)]  #
+        cmap_name = 'black_' + color
+        cm.append(mcolors.LinearSegmentedColormap.from_list(cmap_name, colors_, N=n_bin))"""
+    color_maps = generate_colormaps(num_maps)
+
     for i,subplot in enumerate(specs):
         plt.subplot(subplot)
         ax = plt.gca()
         image = imgs_list[i]
         name = names_list[i]
-        ax.imshow(image)
+        ax.imshow(image,cmap=color_maps[i])
         ax.set_title(name)
     plt.show()
 
@@ -264,8 +278,30 @@ def sketchy_map_processing(map_data=None,elements=[""]):
     cv2.imwrite(save_folder + '/HAADF_0.tif',HAADF)
 
 
+    #TODO make this better, have it check all lines for all elements and exclude anything below 5% intensity
+def get_xray_lines(elements=[],lines=['Ka1',"Kb1", 'La1', 'Ma1']):
+    filters = {}
+    #TODO part of this doesnt really make sense, maybe rewrite it so it does
+    for element in elements:
+        ls = element.split(' ') #for some reason splits white space
+        """if len(ls) > 1: #if there is something that has been split
+            actual_lines = [ls[1]]
+            element = ls[0]
+        else:
+            actual_lines = lines"""
+        for line in lines:#actual_lines:
+            try:
+                xdb.xray_lines(element)[line]
+            except:
+                pass
+            else: #TODO is this redundant?
+                energy = xdb.xray_lines(element)[line].energy
+                if energy <= 30000:
+                    filters[element + ' ' + line] = energy
 
-def produce_spectrum(map_data=None,elements=None):
+    return filters
+
+def produce_spectrum(map_data=None,elements=None,normalise=False):
     edx_data = []
 
     print("loading data")
@@ -275,7 +311,6 @@ def produce_spectrum(map_data=None,elements=None):
         file_path = os.listdir(data_folder)
         for file in tqdm(file_path):  # iterates through folder with a progress bar
             path = data_folder + "\\" + file  # picks individual images
-            print(path)
             if file.endswith(".pdat"):
                 with open(path, "rb") as f:
                     header, data, s0 = pickle.load(f)
@@ -288,13 +323,37 @@ def produce_spectrum(map_data=None,elements=None):
         edx_data.append(data["edxData"]["EDX1"]["energy"])
 
     energies = np.concatenate([e[0] for e in edx_data])
-    #pixels = np.concatenate([e[1] for e in edx_data])
-
-
 
     histogram,bin_edges = np.histogram(energies,bins=4000,range=(0,20000))
-    plt.stairs(histogram,bin_edges)
 
+    if normalise:
+        max_count = max(histogram[200:])
+        normalised_histogram = histogram/max_count
+        plt.stairs(normalised_histogram, bin_edges, color="black")
+        plt.ylabel("Normalised intensity")
+    else:
+        plt.stairs(histogram,bin_edges,color="black")
+
+        plt.ylabel("Intensity (Counts)")
+
+    plt.xlim(left=200)
+    plt.xlabel("Energy (eV)")
+
+
+
+    if elements is not None:
+        lines = get_xray_lines(elements=elements)#,lines=['Ka1','La1',"Ma"])
+        #print(lines)
+        colors = generate_colorlist(len(lines))
+        i=0
+        for name,line in zip(lines.keys(),lines.values()):
+            energy = line
+            plt.axvline(energy,linestyle="dotted",color=colors[i],label=name)
+            plt.text(energy,1.1,name,rotation="vertical")
+            i+=1
+
+    plt.legend()
     plt.show()
 
-produce_spectrum()
+#sketchy_map_processing(elements=["Al","Cu","Ti","Si","C"])
+produce_spectrum(elements=["Al","Cu","Ti","Si","C"],normalise=True)
