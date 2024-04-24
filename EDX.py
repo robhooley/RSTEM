@@ -12,6 +12,7 @@ import easygui as g
 import cv2 as cv2
 from tqdm import tqdm
 import matplotlib.colors as mcolors
+from collections import defaultdict
 import xraydb as xdb
 import scipy.signal
 import matplotlib.pyplot as plt
@@ -342,7 +343,7 @@ def produce_spectrum(map_data=None,elements=None,normalise=False):
 
 
     if elements is not None:
-        lines = get_xray_lines(elements=elements)#,lines=['Ka1','La1',"Ma"])
+        lines = get_xray_lines_remade(elements=elements)#,lines=['Ka1','La1',"Ma"])
         #print(lines)
         colors = generate_colorlist(len(lines))
         i=0
@@ -355,5 +356,53 @@ def produce_spectrum(map_data=None,elements=None,normalise=False):
     plt.legend()
     plt.show()
 
+def get_xray_lines_remade(elements=[],intensity_threshold=0.05):
+    """Params
+    elements : List of elements in individual strings ["Al","Cu","Fe"],
+    intensity_threshold : minimum peak intensity normalised to the strongest peak
+    returns a dictionary with the X-ray line family and energy"""
+
+    def list_duplicates(seq):
+        tally = defaultdict(list)
+        for i, item in enumerate(seq):
+            tally[item].append(i)
+        return ((key, locs) for key, locs in tally.items()
+                if len(locs) > 1)
+
+    line_family_list = []
+    family_average_energy_list = []
+    line_dictionary = {} #opens empty dictionary to hold lines and energies
+    for element in elements: #for each element
+        line_details = [] #empty list for line names
+        line_energies = [] #empty list for line energies
+        lines = xdb.xray_lines(element) #gets all lines for an element
+        for line_name,info in zip(lines.keys(),lines.values()): #for each line
+            if info.intensity >= intensity_threshold and 20000 >= info.energy >= 200: #filters out low,high energy and minor lines
+                line_name = line_name[:-1] #strips the number out
+                line_detail = (element+" "+line_name) #adds the name to the list
+                line_details.append(line_detail) #adds the name to the list
+                line_energies.append(info.energy) #adds the energy to the list
+        #within each element filter out ka1 ka2 and average into single ka family
+        """ for duplicate in sorted(list_duplicates(line_details)): #TODO refactor and tidy up
+            #print(duplicate)
+            line_family_indexes = duplicate[1]
+            av_en = []
+            for index in line_family_indexes:
+                av_en.append(line_energies[index])
+            line_average_energy = np.average(av_en)
+            #print(duplicate[0],line_average_energy)
+            line_family_list.append(duplicate[0])
+            family_average_energy_list.append(line_average_energy)
+        print(line_details,"Only one line")"""
+
+
+        for name,energy in zip(line_details,line_energies): #converts the lists to a dictionary
+        #for name,energy in zip(line_family_list,family_average_energy_list): #converts the lists to a dictionary
+            line_dictionary[name]=energy
+
+    return line_dictionary
+
+#lines = get_xray_lines_remade(["C","N","Al","Si","Cu","Ti","Li","Os","Ta","U"])
+#print(lines)
 #sketchy_map_processing(elements=["Al","Cu","Ti","Si","C"])
-produce_spectrum(elements=["Al","Cu","Ti","Si","C"],normalise=True)
+produce_spectrum(elements=["C","N","Al","Fe","Si","Cu","Mn","Ti","Sn","Ga","Ca"],normalise=True)
