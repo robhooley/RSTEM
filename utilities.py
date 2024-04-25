@@ -341,23 +341,30 @@ def import_tiff_series_basic(scan_width=None):
 
     return reshaped_array #just a data array reshaped to the 4D STEM acquisition shape
 
-def generate_colorlist(num_colors_needed):
-    colorlist = dict(mcolors.BASE_COLORS, **mcolors.CSS4_COLORS)
-    reasonable_colors = ["#FF8C00",'#9932CC','#2E8B57','#FA8072','#A0522D','#87CEEB','#D8BFD8','#FF6347','#6B8E23',"#7CFC00",'#E6E6FA','#FF69B4','#DB7093','#FFD700','#B0C4DE']
-    if num_colors_needed > len(reasonable_colors):
+def generate_colorlist(num_colors_needed,mode=None):
+    if mode == "Explore": #this is only used as a joke
+        print("Using Explores colour palette")
+        reasonable_colors = ["#FF69B4", '#FF00FF', '#F3CFC6', '#FA8072', "#DA70D6","#FAA0A0","#F89880","#A95C68","#E30B5C","#FF10F0","#D8BFD8","#E37383",
+                             "#E0BFB8","#9F2B68","#F2D2BD","#DE3163","#FF7F50"]
+        color_list_output = reasonable_colors[:num_colors_needed]
+    else:
+        colorlist = dict(mcolors.BASE_COLORS, **mcolors.CSS4_COLORS)
+        reasonable_colors = ["#FF8C00",'#9932CC','#2E8B57','#FA8072','#A0522D','#87CEEB','#D8BFD8','#FF6347','#6B8E23',"#7CFC00",'#E6E6FA','#FF69B4','#DB7093','#FFD700','#B0C4DE']
+        if num_colors_needed > len(reasonable_colors):
 
-        num_extra_needed = num_colors_needed-len(reasonable_colors)
-        while num_extra_needed != 0 :
-            random_pick = random.choice(list(colorlist.values()))
-            if random_pick not in reasonable_colors:
-                reasonable_colors.append(random_pick)
-            num_extra_needed = num_colors_needed - len(reasonable_colors)
+            num_extra_needed = num_colors_needed-len(reasonable_colors)
+            while num_extra_needed != 0 :
+                random_pick = random.choice(list(colorlist.values()))
+                if random_pick not in reasonable_colors:
+                    reasonable_colors.append(random_pick)
+                num_extra_needed = num_colors_needed - len(reasonable_colors)
+        color_list_output = reasonable_colors[:num_colors_needed]
 
-    return reasonable_colors[:num_colors_needed]
+    return color_list_output
 
-def generate_colormaps(num_colors,num_bins=100):
+def generate_colormaps(num_colors,num_bins=100,mode=None):
     colormaps = []
-    color_list = generate_colorlist(num_colors)
+    color_list = generate_colorlist(num_colors,mode)
     for color in color_list:
         colors_ = [mcolors.to_rgb('black'), mcolors.to_rgb(color)]  #
         cmap_name = 'black_' + color

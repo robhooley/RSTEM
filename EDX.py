@@ -133,13 +133,16 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
     return map_data
 
 
-def sketchy_map_processing(map_data=None,elements=[""]):
+def sketchy_map_processing(map_data=None,elements=[""],mode=None):
+    """parameters
+    map_data : if map_data is stored in RAM, or left as None to load from file
+    elements : List of elements in string format ["Cu","Al","Ti"]
+    mode : Keep as None, mode="Explore" uses Explores color palette"""
+
     edx_data = []
     BFs = []
     ADFs = []
 
-    #TODO handle loading data from folder
-    print("loading data")
     if map_data == None:
         map_data = []
         data_folder = g.diropenbox("data folder","data folder")
@@ -178,24 +181,44 @@ def sketchy_map_processing(map_data=None,elements=[""]):
         return result/np.sum(result)
 
     # generate gaussians for each line of elements:
-    lines = get_xray_lines(elements)#edx_processing.get_edx_filters(elements)
+    lines = get_xray_lines_remade(elements)#edx_processing.get_edx_filters(elements)
+    #lines = get_xray_lines(elements)
     E = np.array(range(0, 2**16))  # max energy 2**16 kV
     bases = []
-    for name, value in lines.items():
-        bases.append(generate_base_function(value, E))
+
+    map_names = []
+    map_energies = []
+    for name,value in lines.items():
+        #map_names.append(name)
+        for map_energy in value:
+            if map_energy not in map_energies:
+                map_energies.append(map_energy)
+                map_names.append(name)
+
+
+
+    #name is not used here, just energy, this can be a list if rewritten
+    #for name, value in lines.items():
+        #family_energy = value
+        #for line_energy in family_energy:
+            #print(line_energy)
+
+    for value in map_energies:
+        base = generate_base_function(value, E)
+        print(base)
+        bases.append(base)
     N = len(bases)
     bases = np.array(bases)
-
     # generate basis matrix:
-
     M = []
     for i in range(N):
         M.append([])
         for j in range(N):
             M[i].append(np.sum(bases[i]*bases[j]))
-    Mi = np.linalg.inv(M)
+    Mi = np.linalg.inv(M) #this cannot handle duplicate bases, so need to filter out duplicate energies
 
     # now we remap the energy events to the probabilities of the element (it is same as linear fitting):
+    print("number of X-ray events -",len(energies))
     batch = 400_000
     channels = np.zeros((N, (scan_pixels[1]* scan_pixels[2])))
 
@@ -220,8 +243,10 @@ def sketchy_map_processing(map_data=None,elements=[""]):
         print(i, end="\r")
 
     imgs_all = {}
+
     for i in range(N):
-        imgs_all[list(lines.keys())[i]] = channels_filtered[i, :, :]
+        #imgs_all[list(lines.keys())[i]] = channels_filtered[i, :, :]
+        imgs_all[map_names[i]]=channels_filtered[i, :, :]
 
     # plot them
 
@@ -246,7 +271,7 @@ def sketchy_map_processing(map_data=None,elements=[""]):
         colors_ = [mcolors.to_rgb('black'), mcolors.to_rgb(color)]  #
         cmap_name = 'black_' + color
         cm.append(mcolors.LinearSegmentedColormap.from_list(cmap_name, colors_, N=n_bin))"""
-    color_maps = generate_colormaps(num_maps)
+    color_maps = generate_colormaps(num_maps,mode=mode)
 
     for i,subplot in enumerate(specs):
         plt.subplot(subplot)
@@ -254,7 +279,12 @@ def sketchy_map_processing(map_data=None,elements=[""]):
         image = imgs_list[i]
         name = names_list[i]
         ax.imshow(image,cmap=color_maps[i])
-        ax.set_title(name)
+        if mode == "Explore":
+            ax.set_title(name,color="pink")
+
+    if mode == "Explore":
+        plt.suptitle("EDX Mapping, Explore style",color="pink")
+
     plt.show()
 
     """    f, ax = plt.subplots(4, 5, sharex=True, sharey=True)
@@ -374,8 +404,6 @@ def get_xray_lines_remade(elements=[],intensity_threshold=0.05):
     line_family_list = []
     family_energy_list = []
     line_dictionary = {} #opens empty dictionary to hold lines and energies
-    #line_details = []
-    #line_energies = []
     for element in elements: #for each element
         line_details = [] #empty list for line names
         line_energies = [] #empty list for line energies
@@ -392,7 +420,7 @@ def get_xray_lines_remade(elements=[],intensity_threshold=0.05):
                 line_family_indexes = duplicate[1]
                 family_energy = []
                 for index in line_family_indexes:
-                    print(line_energies[index])
+                    #print(line_energies[index])
                     family_energy.append(line_energies[index])
                 family_energy_list.append(family_energy)
                 line_family_list.append(duplicate[0])
@@ -404,10 +432,10 @@ def get_xray_lines_remade(elements=[],intensity_threshold=0.05):
     for item in range(len(line_family_list)):
         line_tuple_list.append((line_family_list[item],family_energy_list[item]))
 
-    return line_tuple_list
+    return line_dictionary
 
-lines = get_xray_lines_remade(["C","N","Al","Si","Cu","Ti","Li","Os","Ta","U"])
+#lines = get_xray_lines_remade(["C","N","Al","Si","Cu","Ti","Li","Os","Ta","U"])
 
 #print(lines)
-#sketchy_map_processing(elements=["Al","Cu","Ti","Si","C"])
+sketchy_map_processing(elements=["Al","Cu","Ti","Si","C"],mode=None)
 #produce_spectrum(elements=["C","N","Al","Fe","Si","Cu","Mn","Ti","Sn","Ga","Ca"],normalise=True)

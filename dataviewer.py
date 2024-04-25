@@ -7,9 +7,9 @@ from matplotlib.widgets import Button, Slider
 import easygui as g
 import cv2 as cv2
 
-from expert_pi.RSTEM.utilities import get_microscope_parameters,create_circular_mask
+#from expert_pi.RSTEM.utilities import get_microscope_parameters,create_circular_mask
 
-#from utilities import create_circular_mask
+from utilities import create_circular_mask
 
 def dataviewer_4D(data_array,background_image=None): #TODO consider adding in scalebars
 
