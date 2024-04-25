@@ -133,7 +133,7 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
     return map_data
 
 
-def sketchy_map_processing(map_data=None,elements=[""],mode=None):
+def construct_maps(map_data=None,elements=[""],mode=None):
     """parameters
     map_data : if map_data is stored in RAM, or left as None to load from file
     elements : List of elements in string format ["Cu","Al","Ti"]
@@ -154,7 +154,6 @@ def sketchy_map_processing(map_data=None,elements=[""],mode=None):
                     header, data, s0 = pickle.load(f)
                     map_data.append((header,data))
 
-                #TODO untested
     scan_pixels = map_data[0][0]["scanDimensions"]
     num_frames = len(map_data)
 
@@ -437,5 +436,5 @@ def get_xray_lines_remade(elements=[],intensity_threshold=0.05):
 #lines = get_xray_lines_remade(["C","N","Al","Si","Cu","Ti","Li","Os","Ta","U"])
 
 #print(lines)
-sketchy_map_processing(elements=["Al","Cu","Ti","Si","C"],mode=None)
+construct_maps(elements=["Al","Cu","Ti","Si","C"],mode=None)
 #produce_spectrum(elements=["C","N","Al","Fe","Si","Cu","Mn","Ti","Sn","Ga","Ca"],normalise=True)
