@@ -1,16 +1,18 @@
 import os
-
-#from expert_pi import grpc_client
-#from expert_pi.controllers import scan_helper
-#from expert_pi.stream_clients import cache_client
+import threading
+from expert_pi import grpc_client
+from expert_pi.controllers import scan_helper
+from expert_pi.stream_clients import cache_client
 from stem_measurements import shift_measurements
+from PyQt5.QtWidgets import QApplication
 import pickle
 from time import sleep
 import numpy as np
-#from expert_pi.grpc_client.modules.scanning import DetectorType as DT
+from expert_pi.grpc_client.modules.scanning import DetectorType as DT
 import easygui as g
 import cv2 as cv2
 from tqdm import tqdm
+from sys import getsizeof
 import matplotlib.colors as mcolors
 from collections import defaultdict
 import xraydb as xdb
@@ -20,9 +22,16 @@ from grid_strategy import strategies
 from PIL import Image
 from serving_manager.api import registration_model
 from stem_measurements import edx_processing
+from expert_pi.controllers import main_controller
+from expert_pi.view import main_window
 
-#import utilities
-from utilities import generate_colorlist,generate_colormaps
+import utilities
+
+window = main_window.MainWindow()
+controller = main_controller.MainController(window)
+from expert_pi.RSTEM.utilities import generate_colorlist,generate_colormaps
+
+from expert_pi.console_threads import start_threaded_function
 
 host_F4 = ""
 host_P3 = "172.20.32.1" #TODO confirm
@@ -32,12 +41,9 @@ host_global = '172.16.2.86'
 
 host = host_global
 
-
-
 #TODO untested
-#TODO check reasonable map sizes with RAM usage
-
-def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixels=1024,drift_correction_method="patches"):
+#TODO check reasonable map sizes with RAM usage (1000x1000 maps for 1000 scans)
+def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixels=1024,drift_correction_method="patches",verbose_logging=False):
     """Parameters
     frames: number of scans
     pixel_time: in seconds
@@ -45,6 +51,7 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
     scan_rotation in degrees
     num_pixels: scan dimensions
     drift_correction_method: either "patches" for openCV template matching, "ML" uses trained AI drift correction"""
+
     folder = g.diropenbox("Select folder to save mapping layers into")
     file_name = "\\EDX_map_frame"
     print("Predicted measurement time:", pixel_time*num_pixels**2*frames/60, "min")
@@ -89,16 +96,21 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
 
     if drift_correction_method == "ML":
         drift_correction_method_named = "TESCAN's machine learning"
-    if drift_correction_method == "patches" or "Patches":
+    elif drift_correction_method == "patches" or "Patches":
         drift_correction_method_named = "OpenCV sub-image template matching"
-
-    if drift_correction_method != "patches" or "Patches" or "ML":
+    else:
         print("Drift correction is not being performed")
+
     print(f"Drift correction is using {drift_correction_method_named} for image registration")
 
-
+    if verbose_logging == True: #TODO untested
+        fig = plt.figure()
+        ax0,ax1 = plt.subplots(1,2)
+        image_view = ax0.imshow(anchor_image,cmap="grey")
+        ax1.scatter(0,0)
 
     for i in range(1, frames):
+        print(f"Acquiring frame {i} of {frames}")
         scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1, detectors=[DT.BF, DT.HAADF, DT.EDX1, DT.EDX0])
         header, data = cache_client.get_item(scan_id, num_pixels**2)
         current_shift = grpc_client.illumination.get_shift(grpc_client.illumination.DeflectorType.Scan)
@@ -108,6 +120,7 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
 
         # apply drift correction between images:
         series_image = data["stemData"][tracking_signal].reshape(num_pixels, num_pixels)
+
         #TODO tidy up the shift offset inconsistencies
         if drift_correction_method == "ML":
             registration = registration_model(np.concatenate([anchor_image, series_image], axis=1),
@@ -117,23 +130,34 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
             #real_shift_x = raw_shift[0]*fov  # shifts normalised between 0,1 proportion of image, convert to meters
             #real_shift_y = raw_shift[1]*fov
             shift_offset = (raw_shift[0]*fov,raw_shift[1]*fov)
-            grpc_client.illumination.set_shift({"x": current_shift['x'] + shift_offset[0], "y": current_shift['y'] + shift_offset[1]},grpc_client.illumination.DeflectorType.Scan)  # apply shifts in microns to existing shifts #TODO check if this should be - shift or + shift
-            print(f"frame {i}, X shift {current_shift['x'] + shift_offset[0]*1e9} nm, Y shift {current_shift['y'] + shift_offset[1]*1e9} nm")
-        if drift_correction_method == "patches" or "Patches":
+            grpc_client.illumination.set_shift({"x": current_shift['x'] - shift_offset[0], "y": current_shift['y'] - shift_offset[1]},grpc_client.illumination.DeflectorType.Scan)  # apply shifts in microns to existing shifts #TODO check if this should be - shift or + shift
+            #print(f"frame {i}, X shift {current_shift['x'] - shift_offset[0]*1e9} nm, Y shift {current_shift['y'] - shift_offset[1]*1e9} nm")
+        elif drift_correction_method == "patches" or "Patches":
             shift_offset = shift_measurements.get_offset_of_pictures(anchor_image, series_image, fov, method=shift_measurements.Method.PatchesPass2) # TODO corrects to first image, should it correct to previous image?
             shift_offset = np.dot(R, shift_offset)  # rotate back
-            print(f"frame {i}, X shift {current_shift['x'] + shift_offset[0]*1e9} nm, Y shift {current_shift['y'] + shift_offset[1]*1e9} nm")
-            grpc_client.illumination.set_shift({"x": current_shift['x'] + shift_offset[0], "y": current_shift['y'] + shift_offset[1]}, grpc_client.illumination.DeflectorType.Scan) #TODO check if it should be - or + shifts
+            #print(f"frame {i}, X shift {current_shift['x'] - shift_offset[0]*1e9} nm, Y shift {current_shift['y'] - shift_offset[1]*1e9} nm")
+            grpc_client.illumination.set_shift({"x": current_shift['x'] - shift_offset[0], "y": current_shift['y'] - shift_offset[1]}, grpc_client.illumination.DeflectorType.Scan) #TODO check if it should be - or + shifts
         else:
             pass
+
         image_list.append(series_image)
         map_data.append((header,data,current_shift))
+        if verbose_logging == True: #TODO untested
+            print(f"Frame {i}, X shift {current_shift['x'] - shift_offset[0]*1e9} nm, Y shift {current_shift['y'] - shift_offset[1]*1e9} nm")
+            print("Map data RAM usage",getsizeof(map_data)*1e-6,"Megabytes")
+            print("Image list RAM usage",getsizeof(image_list)*1e-6,"Megabytes")
+            image_view.set_data(series_image) #updates image plot
+            ax1.scatter(shift_offset[0],shift_offset[1])
+            QApplication.processEvents() #sends command to backend to update plots
 
+    """Add in write metadata function"""
+    metadata = utilities.get_microscope_parameters(scan_width_px=num_pixels,use_precession=False,STEM_dwell_time=pixel_time,scan_rotation=scan_rotation)
+    metadata["Number of frames"] =frames
 
     return map_data
 
 
-def construct_maps(map_data=None,elements=[""],mode=None):
+def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None):
     """parameters
     map_data : if map_data is stored in RAM, or left as None to load from file
     elements : List of elements in string format ["Cu","Al","Ti"]
@@ -155,9 +179,11 @@ def construct_maps(map_data=None,elements=[""],mode=None):
                     map_data.append((header,data))
 
     scan_pixels = map_data[0][0]["scanDimensions"]
-    num_frames = len(map_data)
 
-    for i in range(len(map_data)): #map data stored as tuple of (header,data,shifts)
+    if end_of_series is not None: #default is to use all frames
+        num_frames = end_of_series #sets the end frame of the series
+
+    for i in range(num_frames): #map data stored as tuple of (header,data,shifts)
         frame = map_data[i]
         data = frame[1]
         edx_data.append(data["edxData"]["EDX0"]["energy"])
@@ -309,16 +335,16 @@ def construct_maps(map_data=None,elements=[""],mode=None):
 
 
     #TODO make this better, have it check all lines for all elements and exclude anything below 5% intensity
-def get_xray_lines(elements=[],lines=['Ka1',"Kb1", 'La1', 'Ma1']):
+"""def get_xray_lines(elements=[],lines=['Ka1',"Kb1", 'La1', 'Ma1']):
     filters = {}
     #TODO part of this doesnt really make sense, maybe rewrite it so it does
     for element in elements:
         ls = element.split(' ') #for some reason splits white space
-        """if len(ls) > 1: #if there is something that has been split
+        if len(ls) > 1: #if there is something that has been split
             actual_lines = [ls[1]]
             element = ls[0]
         else:
-            actual_lines = lines"""
+            actual_lines = lines
         for line in lines:#actual_lines:
             try:
                 xdb.xray_lines(element)[line]
@@ -329,7 +355,7 @@ def get_xray_lines(elements=[],lines=['Ka1',"Kb1", 'La1', 'Ma1']):
                 if energy <= 30000:
                     filters[element + ' ' + line] = energy
 
-    return filters
+    return filters"""
 
 def produce_spectrum(map_data=None,elements=None,normalise=False):
     edx_data = []
@@ -432,9 +458,3 @@ def get_xray_lines_remade(elements=[],intensity_threshold=0.05):
         line_tuple_list.append((line_family_list[item],family_energy_list[item]))
 
     return line_dictionary
-
-#lines = get_xray_lines_remade(["C","N","Al","Si","Cu","Ti","Li","Os","Ta","U"])
-
-#print(lines)
-construct_maps(elements=["Al","Cu","Ti","Si","C"],mode=None)
-#produce_spectrum(elements=["C","N","Al","Fe","Si","Cu","Mn","Ti","Sn","Ga","Ca"],normalise=True)

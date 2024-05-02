@@ -79,8 +79,8 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pi
 
     return image_series,defocus_offsets
 
-#TODO tested ok
-def acquire_STEM(BF=True,ADF=False, fov_um=None,pixel_time_us=None,num_pixels=1024,scan_rotation_deg=None):
+#TODO retest
+def acquire_STEM( fov_um=None,pixel_time_us=None,num_pixels=1024,scan_rotation_deg=None):
     """Acquires a single STEM image from the requested detectors
     returns a tuple with the images and the metadata in a dictionary
     Parameters
@@ -94,55 +94,31 @@ def acquire_STEM(BF=True,ADF=False, fov_um=None,pixel_time_us=None,num_pixels=10
     if scan_rotation_deg is not None:
         grpc_client.scanning.set_rotation(np.deg2rad(scan_rotation_deg))
     if pixel_time_us is None:
-        pixel_time = window.scanning.pixel_time_spin.value()/1e6  # gets current pixel time from UI and convert to seconds
+        pixel_time = window.scanning.pixel_time_spin.value()*1e-6  # gets current pixel time from UI and convert to seconds
     else:
-        pixel_time = pixel_time_us/1e6
+        pixel_time = pixel_time_us*1e-6
     if fov_um is not None:
-        grpc_client.scanning.set_field_width(fov_um/1e6) #in microns
+        grpc_client.scanning.set_field_width(fov_um*1e-6) #in microns
 
-    if BF == True and ADF == True:
-        detectors = [DT.BF,DT.HAADF]
-        if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(
-                DT.HAADF) is False:
-            grpc_client.stem_detector.set_is_inserted(DT.BF,True) #insert BF detector
-            grpc_client.stem_detector.set_is_inserted(DT.HAADF, True) #insert ADF detector
-            print("Inserting requested detectors")
-            print("Stabilising")
-            sleep(5)
-    elif BF == True and ADF == False:
-        detectors = [DT.BF]
-        if grpc_client.stem_detector.get_is_inserted(DT.BF) is False:
-            grpc_client.projection.set_is_off_axis_stem_enabled(True)
-            print("BF detector was not inserted, using off axis conditions")
-    elif ADF == True and BF == False:
-        detectors = [DT.HAADF]
-        if grpc_client.stem_detector.get_is_inserted(DT.HAADF) is False:
-            grpc_client.stem_detector.set_is_inserted(DT.HAADF, True)  # insert ADF detector
-            print("Inserting requested detectors")
-            print("Stabilising")
-            sleep(5)
+    if grpc_client.stem_detector.get_is_inserted(DT.BF) is False and grpc_client.stem_detector.get_is_inserted(
+            DT.HAADF) is False:
+        grpc_client.projection.set_is_off_axis_stem_enabled(True) #ensure off axis BF is used if both detectors are out
 
-    scan_rotation_deg = np.rad2deg(grpc_client.scanning.get_rotation())
-
+    if grpc_client.stem_detector.get_is_inserted(DT.BF) is False and grpc_client.stem_detector.get_is_inserted(
+            DT.HAADF) is True:
+        grpc_client.projection.set_is_off_axis_stem_enabled(False)  # ensure off axis BF is used if both detectors are out
     metadata = get_microscope_parameters(scan_width_px = num_pixels,use_precession=False,camera_frequency_hz = None,
-                                         STEM_dwell_time = pixel_time_us,scan_rotation=scan_rotation_deg)
+                                         STEM_dwell_time = pixel_time_us,scan_rotation=np.rad2deg(grpc_client.scanning.get_rotation()))
 
     scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
-                                               detectors=detectors)
+                                               detectors=[DT.BF,DT.HAADF])
     header, data = cache_client.get_item(scan_id, num_pixels ** 2) #retrive small measurements in one chunk
 
-    if BF == True and ADF == True:
-        BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
-        ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
-        return(BF_image,ADF_image,metadata)
 
-    if BF == True and ADF == False:
-        BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
-        return(BF_image,metadata)
+    BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
+    ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
+    return([BF_image,ADF_image],metadata)
 
-    if ADF == True and BF == False:
-        ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
-        return(ADF_image,metadata)
 
 #tested ok
 def save_STEM(image,metadata=None,name=None,folder=None):
@@ -205,7 +181,7 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None):
     initial_ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
     ADF_images_list.append(initial_ADF_image)
     image_offsets.append(initial_shift)
-
+    #TODO this needs a tracking signal image flag to handle HAADF images with BF retracted
     for frame in range(num_frames):
         print("Acquiring frame",frame,"of",num_frames)
         scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
@@ -219,14 +195,14 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None):
 
         s = grpc_client.illumination.get_shift(grpc_client.illumination.DeflectorType.Scan) #get current beam shifts
         # apply drift correction between images:
-        registration = registration_model(np.concatenate([BF_images_list[-1],BF_image],axis=1),
+        registration = registration_model(np.concatenate([BF_images_list[0],BF_image],axis=1),
                                           'TEMRegistration', host=host, port='7443',
                                           image_encoder='.tiff') #measure offset of images # TODO corrects to first image, should it correct to previous image?
         raw_shift = registration[0]["translation"]
         real_shift_x = raw_shift[0]*fov #shifts normalised between 0,1 proportion of image, convert to meters
         real_shift_y = raw_shift[1]*fov
         grpc_client.illumination.set_shift(
-                {"x": s['x'] + real_shift_x , "y": s['y'] + real_shift_y },grpc_client.illumination.DeflectorType.Scan) #apply shifts in microns to existing shifts
+                {"x": s['x'] - real_shift_x , "y": s['y'] - real_shift_y },grpc_client.illumination.DeflectorType.Scan) #apply shifts in microns to existing shifts
 
     print("Post acquisition fine correction")
     aligned_BF_series,summed_BF,_ = align_series_ML(BF_images_list)

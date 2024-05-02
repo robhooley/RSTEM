@@ -24,7 +24,7 @@ from matplotlib import transforms as tf
 #from expert_pi.RSTEM.utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar #utilities file in RSTEM directory
 from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar
 
-
+#TODO scan 4D basic but with ROI mode and direct saving to HDD
 
 
 print("push")

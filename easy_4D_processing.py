@@ -36,14 +36,12 @@ def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=Fals
         grpc_client.stem_detector.set_is_inserted(DT.HAADF, False) #retract ADF detector
         for i in tqdm(range(5),desc="stabilising after detector retraction",unit=""):
             sleep(1) #wait for 5 seconds
-    #grpc_client.scanning.set_precession_frequency(72000) TODO check if needed
     grpc_client.projection.set_is_off_axis_stem_enabled(False) #puts the beam back on the camera if in off-axis mode
     sleep(0.2)  # stabilization
     scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(1/camera_frequency_hz, 8), total_size=scan_width_px, frames=1, detectors=[DT.Camera], is_precession_enabled=use_precession)
     print("Acquiring",scan_width_px,"x",scan_width_px,"px dataset at",camera_frequency_hz,"frames per second")
     image_list = [] #empty list to take diffraction data
     for i in tqdm(range(scan_width_px),desc="Retrieving data from cache",total=scan_width_px,unit="chunks"): #retrives data one scan row at a time to avoid crashes
-        #print("getting data", i, "/", scan_width_px)
         header, data = cache_client.get_item(scan_id, scan_width_px)  # cache retrieval in rows
         camera_size = data["cameraData"].shape[1],data["cameraData"].shape[2] #gets shape of diffraction patterns
         for j in range(scan_width_px): #for each pixel in that row
@@ -173,7 +171,7 @@ def multi_VDF(data_array,radius=None):
             radius = radius
         else:
             radius = predicted_spot_radius*1.3
-            print("The predicted spot radius is{predicted_spot_radius} pixels, adding a 30% buffer for easy positioning")
+            print(f"The predicted spot radius is {predicted_spot_radius} pixels, adding a 30% buffer for easy positioning")
     else:
         image_array = data_array
         metadata=None
