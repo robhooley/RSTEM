@@ -164,7 +164,7 @@ def multi_VDF(data_array,radius=None):
     if type(data_array) is tuple: #checks for metadata dictionary #TODO works ok with and without metadata
         image_array = data_array[0]
         metadata = data_array[1]
-        print("Metadata exists")
+        #print("Metadata exists")
         predicted_spot_radius = spot_radius_in_px(data_array)
 
         if radius is not None:
@@ -280,13 +280,13 @@ def multi_VDF(data_array,radius=None):
         ax.spines['left'].set_linewidth(3) #line thickness
         plt.setp(ax, xticks=[], yticks=[]) #removes ticks
     plt.gray() #sets plots to be grayscale
-    plt.show() #shows the plot
+    #plt.show() #shows the plot
     plt.close()
 
     return annotated_image ,sum_diffraction,DF_images #annotated image is scaled to show the final figure scale which is small #TODO make this better, maybe plot it again before export?
 
-#Checked ok
-def save_data(data_array,format=None,output_resolution=None):
+#TODO test with new scaling and file number incrementing
+def save_data_fixed(data_array,format=None,output_resolution=None):
     """Handles data saving for scan4D_basic
     Parameters
     data_array: from scan_4D_basic, either with or without metadata
@@ -308,7 +308,7 @@ def save_data(data_array,format=None,output_resolution=None):
 
     formats=["TIFFs","Numpy array","Pickle"]
     if format == None:
-        format = g.choicebox("Select format for data to be saved","select format for data to be saved",formats)
+        format = g.choicebox("Select format for data to be saved","select format for data to be saved",formats,preselect=1)
     shape_4D = image_array.shape
     if format == "TIFFs":
         print("Saving",shape_4D[0]*shape_4D[1],"files as .tiff")
@@ -322,17 +322,31 @@ def save_data(data_array,format=None,output_resolution=None):
                 i += 1 #increases the number for the next frame
         print("Saving complete") #status update
     elif format == "Numpy array":
+        num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.npy'))
+        filename=filename+f"{num_files_in_dir+1}"
+        if output_resolution is not None:
+            print(f"Binning diffraction patterns to {output_resolution}x{output_resolution}px")
+            resized_images = []
+            for row in tqdm(image_array,unit="Chunks"):
+                for image in row:
+                    image_resized = cv2.resize(image,dsize=[output_resolution,output_resolution])
+                    resized_images.append(image_resized)
+            image_array = np.asarray(resized_images)
+            image_array = np.reshape(image_array, (shape_4D[0], shape_4D[1], output_resolution, output_resolution))
+
         print(f"Saving to numpy array, {filename}.npy")
         np.save(filename, image_array)
         print("Saving complete")
     elif format == "Pickle":
+        num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.pdat'))
+        filename = filename + f"{num_files_in_dir + 1}"
         print(f"saving as Pickle with metadata {filename}.pdat file")
         with open (f"{filename}.pdat","wb")as f:
             p.dump((image_array,metadata),f)
         print("Pickling complete")
 
     if metadata is not None:
-        metadata_name = directory + "\\4D-STEM_metadata.json"
+        metadata_name = directory + f"\\4D-STEM_metadata{num_files_in_dir+1}.json"
         open_json = open(metadata_name,"w")
         json.dump(metadata,open_json,indent=6)
         open_json.close()

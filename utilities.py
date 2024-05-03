@@ -11,8 +11,8 @@ import scipy.constants
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import random
-#from expert_pi import grpc_client
-#from expert_pi.__main__ import window
+from expert_pi import grpc_client
+from expert_pi.__main__ import window
 
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None): #todo move to utilities file
     if mask_center_coordinates is None:  # use the middle of the image
@@ -34,7 +34,7 @@ def spot_radius_in_px(data_array):
         print("Metadata is present")
         convergence_semiangle = metadata.get("Convergence semiangle (mrad)")
         diffraction_angle = metadata.get("Diffraction semiangle (mrad)")
-        mrad_per_pixel = diffraction_angle/dp_shape[0] #angle calibration per pixel
+        mrad_per_pixel = diffraction_angle*2/dp_shape[0] #angle calibration per pixel
         convergence_pixels = convergence_semiangle/mrad_per_pixel #convergence angle in pixels
         pixel_radius = convergence_pixels #semi-angle and radius
 
@@ -371,3 +371,83 @@ def generate_colormaps(num_colors,num_bins=100,mode=None):
         colormaps.append(mcolors.LinearSegmentedColormap.from_list(cmap_name, colors_, N=num_bins))
 
     return colormaps
+
+#TODO this needs to be split into sections by acquisition type and made into single layered dictionary
+#TODO set sensible decimal places
+
+def collect_metadata(acquisition_type,scan_width_px=None,use_precession=False,camera_frequency_hz=None,STEM_dwell_time=None,scan_rotation=0):
+    """Extracts acquisition conditions from the microscope and stores them in a dictionary
+    Parameters:
+    scan_width_px: the number of pixels in the x axis
+    use_precession: True or False
+    camera_frequency_hz: The camera acquisition rate in FPS or Hz
+    """
+
+    if scan_width_px is None:
+        scan_width_px = get_number_of_nav_pixels()
+
+    fov = grpc_client.scanning.get_field_width() #get the current scanning FOV
+    pixel_size_nm = (fov/scan_width_px)*1e9 #work out the pixel size in nanometers
+    time_now = datetime.now()
+    acquisition_time = time_now.strftime("%d_%m_%Y %H_%M")
+    energy=grpc_client.gun.get_high_voltage()
+    wavelength = calculate_wavelength(energy)
+    pixel_size_inv_angstrom = (2*grpc_client.projection.get_max_camera_angle())*1e-3/(
+                wavelength*0.01)/512 #assuming 512 pixels #TODO change to camera pixels if in 4D mode
+
+    if STEM_dwell_time == None: #only needed for acquisitions from the console that use the UI dwell time
+        STEM_dwell_time = window.scanning.pixel_time_spin.value() #in us
+
+
+    if camera_frequency_hz == None:
+        dwell_time_units = "us"
+        dwell_time = STEM_dwell_time
+        dwell_time_seconds = dwell_time*1e-6
+        max_angles = grpc_client.projection.get_max_detector_angles()
+        HAADF_inserted = grpc_client.stem_detector.get_is_inserted(grpc_client.stem_detector.DetectorType.HAADF)
+
+    else:
+        camera_dwell_time = 1/camera_frequency_hz*1e3
+        dwell_time = camera_dwell_time
+
+    #TODO consider splitting it based on acquisition type?
+
+    microscope_info = { #creates a dictionary of microscope parameters
+    "Acquisition date and time":acquisition_time,
+    "High Tension (kV)":energy/1e3,
+    "Probe current (pA)" : grpc_client.illumination.get_current()*1e12,
+    "Convergence semiangle (mrad)" : grpc_client.illumination.get_convergence_half_angle()*1e3,
+    "Beam diameter (d50) (nm)" : grpc_client.illumination.get_beam_diameter()*1e9,
+    "FOV (um)" : fov*1e6,
+    "Pixel size (nm)" : pixel_size_nm,
+    "Scan width (px)":scan_width_px,
+    "Diffraction semiangle (mrad)" : grpc_client.projection.get_max_camera_angle()*1e3,
+    "Diffraction angle (mrad)" : grpc_client.projection.get_max_camera_angle()*1e3*2,
+    "Camera pixel size (A^-1)":pixel_size_inv_angstrom,
+    "Scan rotation (deg)":scan_rotation,
+    "Rotation angle between diffraction pattern and stage XY (deg)":np.rad2deg(grpc_client.projection.get_camera_to_stage_rotation()),
+    }
+
+    microscope_info["Acquisition type"]= acquisition_type
+
+    if acquisition_type == "STEM":
+        microscope_info["Dwell time (us)"] = dwell_time
+        microscope_info["BF collection semi-angle (mrad)"]= 1e3*max_angles["bf"]["end"] if not HAADF_inserted else 1e3*max_angles["haadf"]["start"]
+        microscope_info["ADF inner collection semi-angle (mrad)"] = 1e3*max_angles["haadf"]["start"]
+        microscope_info["ADF outer collection semi-angle (mrad)"] = 1e3*max_angles["haadf"]["end"]
+
+    if acquisition_type == "Camera":
+        microscope_info["Dwell time (ms)"] = (1/(camera_frequency_hz/1000))
+        microscope_info["Precession enabled"]=use_precession
+        microscope_info["precession angle (mrad)"] = grpc_client.scanning.get_precession_angle()*1e3
+        microscope_info["Precession Frequency (kHz)"] = grpc_client.scanning.get_precession_frequency()/1e3
+
+        microscope_info["Predicted diffraction spot size"] = spot_radius_in_px()
+
+    microscope_info["Alpha tilt (deg)"] = grpc_client.stage.get_alpha()/np.pi*180
+    microscope_info["Beta tilt (deg)"] = grpc_client.stage.get_beta()/np.pi*180
+    microscope_info["X (mm)"] = grpc_client.stage.get_x_y()["x"]*1e3
+    microscope_info["Y (mm)"] = grpc_client.stage.get_x_y()["y"]*1e3
+    microscope_info["Z (mm)"] = grpc_client.stage.get_z()*1e3
+
+    return microscope_info
