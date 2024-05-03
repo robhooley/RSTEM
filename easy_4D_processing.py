@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import json
+
+import psutil
 from matplotlib import patches, gridspec
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import pickle as p
@@ -28,7 +30,20 @@ def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=Fals
     camera_frequency: camera speed in frames per second up to 72000
     use_precession: True or False
     """
-    #TODO what will happen on random camera frequencies 4600,70000,14500 etc
+
+    #TODO put in RAM checker and catch excessive dataset sizes
+    if camera_frequency_hz < 2250:
+        bit_depth = 16
+    else:
+        bit_depth=8
+
+    predicted_dataset_size = (scan_width_px*scan_width_px)*(512*512)*bit_depth #in bits
+    predicted_dataset_size_gbytes = (predicted_dataset_size/8)/1e9
+    predicted_dataset_size_with_buffer = predicted_dataset_size_gbytes*1.2
+    free_ram = psutil.virtual_memory().free/1e9
+    print(f"There are {free_ram} Gb of RAM available,dataset predicted to be {predicted_dataset_size_with_buffer}Gb")
+
+
 
     metadata = get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz) #gets the microscope and acquisition metadata
     if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(DT.HAADF) == True: #if either STEM detector is inserted
@@ -285,7 +300,6 @@ def multi_VDF(data_array,radius=None):
 
     return annotated_image ,sum_diffraction,DF_images #annotated image is scaled to show the final figure scale which is small #TODO make this better, maybe plot it again before export?
 
-#TODO test with new scaling and file number incrementing
 def save_data_fixed(data_array,format=None,output_resolution=None):
     """Handles data saving for scan4D_basic
     Parameters
@@ -340,6 +354,15 @@ def save_data_fixed(data_array,format=None,output_resolution=None):
     elif format == "Pickle":
         num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.pdat'))
         filename = filename + f"{num_files_in_dir + 1}"
+        if output_resolution is not None:
+            print(f"Binning diffraction patterns to {output_resolution}x{output_resolution}px")
+            resized_images = []
+            for row in tqdm(image_array,unit="Chunks"):
+                for image in row:
+                    image_resized = cv2.resize(image,dsize=[output_resolution,output_resolution])
+                    resized_images.append(image_resized)
+            image_array = np.asarray(resized_images)
+            image_array = np.reshape(image_array, (shape_4D[0], shape_4D[1], output_resolution, output_resolution))
         print(f"saving as Pickle with metadata {filename}.pdat file")
         with open (f"{filename}.pdat","wb")as f:
             p.dump((image_array,metadata),f)
