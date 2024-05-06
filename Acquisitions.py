@@ -127,7 +127,6 @@ def save_STEM(image,metadata=None,name=None,folder=None):
     metadata : optional dictionary to be saved as json
     name: optional user defined filename, otherwise will be called STEM
     folder: optional user defined folder, otherwise will show UI to select"""
-
     if folder == None:
         folder = g.diropenbox("Enter save location","Enter save location")
         folder + "\\"
