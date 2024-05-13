@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import json
 
-import psutil
+
 from matplotlib import patches, gridspec
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import pickle as p
@@ -21,56 +21,48 @@ from expert_pi.stream_clients import cache_client
 from expert_pi.grpc_client.modules._common import DetectorType as DT
 
 #comment this out depending on where the script is located
-from expert_pi.RSTEM.utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px #utilities file in RSTEM directory
-#from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px
+from expert_pi.RSTEM.utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,check_memory #utilities file in RSTEM directory
+#from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,check_memory
 
 def scan_4D_basic(scan_width_px=100,camera_frequency_hz=1000,use_precession=False):
     """Parameters
     scan width: pixels
     camera_frequency: camera speed in frames per second up to 72000
     use_precession: True or False
+    returns a tuple of (image_array, metadata)
     """
 
-    #TODO put in RAM checker and catch excessive dataset sizes
-    if camera_frequency_hz < 2250:
-        bit_depth = 16
+    sufficient_RAM = check_memory(camera_frequency_hz,scan_width_px)
+    if sufficient_RAM == True:
+        metadata = get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz) #gets the microscope and acquisition metadata
+        if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(DT.HAADF) == True: #if either STEM detector is inserted
+            grpc_client.stem_detector.set_is_inserted(DT.BF,False) #retract BF detector
+            grpc_client.stem_detector.set_is_inserted(DT.HAADF, False) #retract ADF detector
+            for i in tqdm(range(5),desc="stabilising after detector retraction",unit=""):
+                sleep(1) #wait for 5 seconds
+        grpc_client.projection.set_is_off_axis_stem_enabled(False) #puts the beam back on the camera if in off-axis mode
+        sleep(0.2)  # stabilization
+        scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(1/camera_frequency_hz, 8), total_size=scan_width_px, frames=1, detectors=[DT.Camera], is_precession_enabled=use_precession)
+        print("Acquiring",scan_width_px,"x",scan_width_px,"px dataset at",camera_frequency_hz,"frames per second")
+        image_list = [] #empty list to take diffraction data
+        for i in tqdm(range(scan_width_px),desc="Retrieving data from cache",total=scan_width_px,unit="chunks"): #retrives data one scan row at a time to avoid crashes
+            header, data = cache_client.get_item(scan_id, scan_width_px)  # cache retrieval in rows
+            camera_size = data["cameraData"].shape[1],data["cameraData"].shape[2] #gets shape of diffraction patterns
+            for j in range(scan_width_px): #for each pixel in that row
+                image_data = data["cameraData"][j] #take the data for that pixel
+                image_data = np.asarray(image_data) #convers to numpy array
+                image_data = np.reshape(image_data,camera_size) #reshapes data to an individual image
+                image_list.append(image_data) #adds it to the list of images
+
+        print("reshaping array") #reshaping the array to match the 4D STEM acquisition
+        image_array = np.asarray(image_list) #converts the image list to an array
+        image_array = np.reshape(image_array, (scan_width_px, scan_width_px, camera_size[0], camera_size[1])) #reshapes the array to match the acquisition
+        print("Array reshaped")
+
+        return (image_array,metadata) #tuple with image data and metadata
     else:
-        bit_depth=8
+        print("Insufficient RAM available for this measurement, try clearing out previous datasets or select other parameters")
 
-    predicted_dataset_size = (scan_width_px*scan_width_px)*(512*512)*bit_depth #in bits
-    predicted_dataset_size_gbytes = (predicted_dataset_size/8)/1e9
-    predicted_dataset_size_with_buffer = predicted_dataset_size_gbytes*1.2
-    free_ram = psutil.virtual_memory().free/1e9
-    print(f"There are {free_ram} Gb of RAM available,dataset predicted to be {predicted_dataset_size_with_buffer}Gb")
-
-
-
-    metadata = get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz) #gets the microscope and acquisition metadata
-    if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(DT.HAADF) == True: #if either STEM detector is inserted
-        grpc_client.stem_detector.set_is_inserted(DT.BF,False) #retract BF detector
-        grpc_client.stem_detector.set_is_inserted(DT.HAADF, False) #retract ADF detector
-        for i in tqdm(range(5),desc="stabilising after detector retraction",unit=""):
-            sleep(1) #wait for 5 seconds
-    grpc_client.projection.set_is_off_axis_stem_enabled(False) #puts the beam back on the camera if in off-axis mode
-    sleep(0.2)  # stabilization
-    scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(1/camera_frequency_hz, 8), total_size=scan_width_px, frames=1, detectors=[DT.Camera], is_precession_enabled=use_precession)
-    print("Acquiring",scan_width_px,"x",scan_width_px,"px dataset at",camera_frequency_hz,"frames per second")
-    image_list = [] #empty list to take diffraction data
-    for i in tqdm(range(scan_width_px),desc="Retrieving data from cache",total=scan_width_px,unit="chunks"): #retrives data one scan row at a time to avoid crashes
-        header, data = cache_client.get_item(scan_id, scan_width_px)  # cache retrieval in rows
-        camera_size = data["cameraData"].shape[1],data["cameraData"].shape[2] #gets shape of diffraction patterns
-        for j in range(scan_width_px): #for each pixel in that row
-            image_data = data["cameraData"][j] #take the data for that pixel
-            image_data = np.asarray(image_data) #convers to numpy array
-            image_data = np.reshape(image_data,camera_size) #reshapes data to an individual image
-            image_list.append(image_data) #adds it to the list of images
-
-    print("reshaping array") #reshaping the array to match the 4D STEM acquisition
-    image_array = np.asarray(image_list) #converts the image list to an array
-    image_array = np.reshape(image_array, (scan_width_px, scan_width_px, camera_size[0], camera_size[1])) #reshapes the array to match the acquisition
-    print("Array reshaped")
-
-    return (image_array,metadata) #tuple with image data and metadata
 
 def selected_area_diffraction(data_array):
     """Takes a 4D data array as produced by scan_4D_basic and allows the user to select virtual apertures in the image
@@ -105,13 +97,9 @@ def selected_area_diffraction(data_array):
     plt.gray() #sets grayscale
     coords = plt.ginput(n=-1,show_clicks=True,timeout=0) #use user mouse input to define the integration region
     plt.close()
-
-
     poly = matpath(coords) #draws a polygon around the coordinates extracted from the image
-
     all_pixel_coordinates = [] #list for all possible coordinates
     inside_pixels = [] #list for coordinates within the polygon
-
     """this is hacky but works"""
     points = image_array.shape[0],image_array.shape[1]
     for i in range(0,points[0]):
@@ -128,11 +116,8 @@ def selected_area_diffraction(data_array):
         pattern = image_array[pixel[1]][pixel[0]] #take the diffraction pattern
         pattern.astype(np.float64) #convert it to 64 bit (better for summation)
         subset_DP_list.append(pattern) #add it to the empty list
-
     subset_array = np.asarray(subset_DP_list)
     subset_summed_DP = np.sum(subset_array,0,dtype=np.float64)
-    #subset_summed_DP = sum(subset_DP_list) #sum the list together
-    #subset_summed_DP.astype(np.float64)
     zero_excluded_max = max(subset_summed_DP[~integration_mask]) #highest intensity outside the zero order disk
 
     export_polygon = patches.Polygon(coords,fill=False,edgecolor="red") #creates a polygon from the user defined integration region
@@ -300,7 +285,7 @@ def multi_VDF(data_array,radius=None):
 
     return annotated_image ,sum_diffraction,DF_images #annotated image is scaled to show the final figure scale which is small #TODO make this better, maybe plot it again before export?
 
-def save_data_fixed(data_array,format=None,output_resolution=None):
+def save_data(data_array,format=None,output_resolution=None):
     """Handles data saving for scan4D_basic
     Parameters
     data_array: from scan_4D_basic, either with or without metadata

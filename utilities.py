@@ -3,6 +3,7 @@ from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 import matplotlib.font_manager as fm
 import os
 import cv2 as cv2
+import psutil
 import fnmatch
 from tqdm import tqdm
 import easygui as g
@@ -11,8 +12,8 @@ import scipy.constants
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import random
-#from expert_pi import grpc_client
-#from expert_pi.__main__ import window
+from expert_pi import grpc_client
+from expert_pi.__main__ import window
 
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None): #todo move to utilities file
     if mask_center_coordinates is None:  # use the middle of the image
@@ -31,16 +32,16 @@ def spot_radius_in_px(data_array):
         metadata = data_array[1] #splits the tuple to image array and metadata dictionary
         shape_4D = image_array.shape #shape of dataset
         dp_shape = shape_4D[2],shape_4D[3] #number of pixels in DP
-        print("Metadata is present")
+        print("Metadata is present, calculating diffraction spot size in pixels")
         convergence_semiangle = metadata.get("Convergence semiangle (mrad)")
         diffraction_angle = metadata.get("Diffraction semiangle (mrad)")
-        mrad_per_pixel = diffraction_angle*2/dp_shape[0] #angle calibration per pixel
+        mrad_per_pixel = (diffraction_angle*2)/dp_shape[0] #angle calibration per pixel
         convergence_pixels = convergence_semiangle/mrad_per_pixel #convergence angle in pixels
         pixel_radius = convergence_pixels #semi-angle and radius
 
     else:
-        print("Metadata is not present")
-        pixel_radius = 1
+        print("Metadata is not present, assuming 10 pixels for spot radius")
+        pixel_radius = 10
 
     return pixel_radius
 
@@ -50,6 +51,22 @@ def get_number_of_nav_pixels(): #checked ok
     return pixels
 
 
+def check_memory(camera_frequency_hz,scan_width_px): #todo put in ROI mode checker
+
+    if camera_frequency_hz < 2250:
+        bit_depth = 16
+    else:
+        bit_depth=8
+
+    predicted_dataset_size = (scan_width_px*scan_width_px)*(512*512)*bit_depth #in bits
+    predicted_dataset_size_gbytes = (predicted_dataset_size/8)/1e9
+    predicted_dataset_size_with_buffer = predicted_dataset_size_gbytes*1.2
+    free_ram = psutil.virtual_memory().free/1e9
+    print(f"There are {free_ram} Gb of RAM available,dataset predicted to be {predicted_dataset_size_with_buffer}Gb")
+    will_work = False
+    if free_ram>predicted_dataset_size_with_buffer:
+        will_work = True
+    return will_work
 
 #TODO this needs to be split into sections by acquisition type and made into single layered dictionary
 #TODO set sensible decimal places
