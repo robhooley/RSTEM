@@ -22,12 +22,58 @@ from matplotlib import transforms as tf
 
 
 #from expert_pi.RSTEM.utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar #utilities file in RSTEM directory
-from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar
+from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,create_scalebar,check_memory
 
-#TODO scan 4D basic but with ROI mode and direct saving to HDD
+#TODO scan 4D basic but with ROI mode and direct saving to disk in temp folder
+#TODO scan 4D-basic but with list to array to see if it faster
 
 
-print("push")
+def scan_4D_basic_faster(scan_width_px=128,camera_frequency_hz=4500,use_precession=False):
+    """Parameters
+    scan width: pixels
+    camera_frequency: camera speed in frames per second up to 72000
+    use_precession: True or False
+    returns a tuple of (image_array, metadata)
+    """
+
+    sufficient_RAM = check_memory(camera_frequency_hz,scan_width_px)
+    if sufficient_RAM == False:
+        print("This dataset will probably not fit into RAM, trying anyway but expect a crash")
+     #gets the microscope and acquisition metadata
+    if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(DT.HAADF) == True: #if either STEM detector is inserted
+        grpc_client.stem_detector.set_is_inserted(DT.BF,False) #retract BF detector
+        grpc_client.stem_detector.set_is_inserted(DT.HAADF, False) #retract ADF detector
+        for i in tqdm(range(5),desc="stabilising after detector retraction",unit=""):
+            sleep(1) #wait for 5 seconds
+    grpc_client.projection.set_is_off_axis_stem_enabled(False) #puts the beam back on the camera if in off-axis mode
+    sleep(0.2)  # stabilisation after deflector change
+    metadata = get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz)
+    scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(1/camera_frequency_hz, 8), total_size=scan_width_px, frames=1, detectors=[DT.Camera], is_precession_enabled=use_precession)
+    print("Acquiring",scan_width_px,"x",scan_width_px,"px dataset at",camera_frequency_hz,"frames per second")
+    image_list = [] #empty list to take diffraction data
+    for i in tqdm(range(scan_width_px),desc="Retrieving data from cache",total=scan_width_px,unit="rows"): #retrives data one scan row at a time to avoid crashes
+        header, data = cache_client.get_item(scan_id, scan_width_px)  # cache retrieval in rows
+        camera_size = data["cameraData"].shape[1],data["cameraData"].shape[2] #gets shape of diffraction patterns
+        image_data = data["cameraData"] #take the data for that row
+        #image_data = np.asarray(image_data) #convers to numpy array
+        image_row = np.reshape(image_data,(scan_width_px,camera_size[0],camera_size[1])) #reshapes data to an individual image
+        image_list.append(image_row) #adds it to the list of images
+
+
+    """This should be a scan width length list with scan width length lists in it"""
+
+    print("reshaping array") #reshaping the array to match the 4D STEM acquisition
+    image_array = np.asarray(image_list) #converts the image list to an array
+    del image_list #flush image list to clear out RAM
+    image_array = np.reshape(image_array, (scan_width_px, scan_width_px, camera_size[0], camera_size[1])) #reshapes the array to match the acquisition
+    print("Array reshaped")
+
+    return (image_array,metadata) #tuple with image data and metadata
+
+
+
+
+
 
 #TODO use metadata for scalebar, maybe common function for all measurements?
 def calibrated_selected_area_diffraction(data_array):

@@ -154,10 +154,9 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
     metadata = utilities.get_microscope_parameters(scan_width_px=num_pixels,use_precession=False,STEM_dwell_time=pixel_time,scan_rotation=scan_rotation)
     metadata["Number of frames"] =frames
 
-    return map_data
+    return map_data,metadata
 
-
-def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None):
+def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None,post_align=False):
     """parameters
     map_data : if map_data is stored in RAM, or left as None to load from file
     elements : List of elements in string format ["Cu","Al","Ti"]
@@ -206,8 +205,7 @@ def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None):
         return result/np.sum(result)
 
     # generate gaussians for each line of elements:
-    lines = get_xray_lines_remade(elements)#edx_processing.get_edx_filters(elements)
-    #lines = get_xray_lines(elements)
+    lines = get_xray_lines(elements)#edx_processing.get_edx_filters(elements)
     E = np.array(range(0, 2**16))  # max energy 2**16 kV
     bases = []
 
@@ -219,14 +217,6 @@ def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None):
             if map_energy not in map_energies:
                 map_energies.append(map_energy)
                 map_names.append(name)
-
-
-
-    #name is not used here, just energy, this can be a list if rewritten
-    #for name, value in lines.items():
-        #family_energy = value
-        #for line_energy in family_energy:
-            #print(line_energy)
 
     for value in map_energies:
         base = generate_base_function(value, E)
@@ -270,11 +260,9 @@ def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None):
     imgs_all = {}
 
     for i in range(N):
-        #imgs_all[list(lines.keys())[i]] = channels_filtered[i, :, :]
         imgs_all[map_names[i]]=channels_filtered[i, :, :]
 
     # plot them
-
     num_maps = len(imgs_all)
 
     imgs_list = []
@@ -284,18 +272,7 @@ def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None):
         imgs_list.append(img)
         names_list.append(name)
 
-        #ax[i%4, i//4].set_title(name)
-        #ax[i%4, i//4].imshow(img)
-
-
     specs = strategies.SquareStrategy("center").get_grid(num_maps)
-
-    """cm = []
-    n_bin = 100
-    for color in colour_list:
-        colors_ = [mcolors.to_rgb('black'), mcolors.to_rgb(color)]  #
-        cmap_name = 'black_' + color
-        cm.append(mcolors.LinearSegmentedColormap.from_list(cmap_name, colors_, N=n_bin))"""
     color_maps = generate_colormaps(num_maps,mode=mode)
 
     for i,subplot in enumerate(specs):
@@ -312,12 +289,6 @@ def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None):
 
     plt.show()
 
-    """    f, ax = plt.subplots(4, 5, sharex=True, sharey=True)
-    i = 0
-    
-        i += 1"""
-
-
     # saving:
     save_folder = g.diropenbox("Select folder to save maps into")
     for name, img in imgs_all.items():
@@ -333,44 +304,20 @@ def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None):
     HAADF = ADFs[0]
     cv2.imwrite(save_folder + '/HAADF_0.tif',HAADF)
 
-
-    #TODO make this better, have it check all lines for all elements and exclude anything below 5% intensity
-"""def get_xray_lines(elements=[],lines=['Ka1',"Kb1", 'La1', 'Ma1']):
-    filters = {}
-    #TODO part of this doesnt really make sense, maybe rewrite it so it does
-    for element in elements:
-        ls = element.split(' ') #for some reason splits white space
-        if len(ls) > 1: #if there is something that has been split
-            actual_lines = [ls[1]]
-            element = ls[0]
-        else:
-            actual_lines = lines
-        for line in lines:#actual_lines:
-            try:
-                xdb.xray_lines(element)[line]
-            except:
-                pass
-            else: #TODO is this redundant?
-                energy = xdb.xray_lines(element)[line].energy
-                if energy <= 30000:
-                    filters[element + ' ' + line] = energy
-
-    return filters"""
-
 def produce_spectrum(map_data=None,elements=None,normalise=False):
     edx_data = []
 
     print("loading data")
-    if map_data == None:
+    if map_data == None: #loads map data from disk
         map_data = []
         data_folder = g.diropenbox("data folder","data folder")
-        file_path = os.listdir(data_folder)
+        file_path = os.listdir(data_folder) #file path
         for file in tqdm(file_path):  # iterates through folder with a progress bar
             path = data_folder + "\\" + file  # picks individual images
-            if file.endswith(".pdat"):
+            if file.endswith(".pdat"): #only collects .pdat files
                 with open(path, "rb") as f:
                     header, data, s0 = pickle.load(f)
-                    map_data.append((header,data))
+                    map_data.append((header,data)) #adds to list of pdat files
 
     for i in range(len(map_data)): #map data stored as tuple of (header,data,shifts)
         frame = map_data[i]
@@ -384,8 +331,8 @@ def produce_spectrum(map_data=None,elements=None,normalise=False):
 
     if normalise:
         max_count = max(histogram[200:])
-        normalised_histogram = histogram/max_count
-        plt.stairs(normalised_histogram, bin_edges, color="black")
+        histogram = histogram/max_count
+        plt.stairs(histogram, bin_edges, color="black")
         plt.ylabel("Normalised intensity")
     else:
         plt.stairs(histogram,bin_edges,color="black")
@@ -398,7 +345,7 @@ def produce_spectrum(map_data=None,elements=None,normalise=False):
 
 
     if elements is not None:
-        lines = get_xray_lines_remade(elements=elements)#,lines=['Ka1','La1',"Ma"])
+        lines = get_xray_lines(elements=elements)#,lines=['Ka1','La1',"Ma"])
         #print(lines)
         colors = generate_colorlist(len(lines))
         i=0
@@ -410,10 +357,12 @@ def produce_spectrum(map_data=None,elements=None,normalise=False):
 
     plt.legend()
     plt.show()
+    return (histogram,bin_edges)
 
 
     #TODO functional but needs commments and refactoring
-def get_xray_lines_remade(elements=[],intensity_threshold=0.05):
+
+def get_xray_lines(elements=[],intensity_threshold=0.05):
     """Params
     elements : List of elements in individual strings ["Al","Cu","Fe"],
     intensity_threshold : minimum peak intensity normalised to the strongest peak

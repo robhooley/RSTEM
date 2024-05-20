@@ -12,6 +12,7 @@ import scipy.constants
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import random
+import matplotlib.transforms as tfrms
 from expert_pi import grpc_client
 from expert_pi.__main__ import window
 
@@ -302,7 +303,7 @@ def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose
 
     return dose_values #returns dose values and the unit
 
-import matplotlib.transforms as tfrms
+
 
 def create_scalebar(ax,scalebar_size_pixels,metadata):
     print(scalebar_size_pixels,"scalebar requested in pixels")
