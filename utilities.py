@@ -12,11 +12,12 @@ import scipy.constants
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import random
+from matplotlib.widgets import Slider
 import matplotlib.transforms as tfrms
 from expert_pi import grpc_client
 from expert_pi.__main__ import window
 
-def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None): #todo move to utilities file
+def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None):
     if mask_center_coordinates is None:  # use the middle of the image
         mask_center_coordinates = (int(image_width/2), int(image_height/2))
     if mask_radius is None:  # use the smallest distance between the center and image walls
@@ -52,21 +53,32 @@ def get_number_of_nav_pixels(): #checked ok
     return pixels
 
 
-def check_memory(camera_frequency_hz,scan_width_px): #todo put in ROI mode checker
-
+def check_memory(camera_frequency_hz,scan_width_px,roi_mode=False,verbose=False):
+    """Checks the current acquisitions size and checks the amount of RAM available to see if it will fit cleanly
+    Returns True or False if the dataset will fit in the RAM"""
     if camera_frequency_hz < 2250:
         bit_depth = 16
     else:
         bit_depth=8
 
-    predicted_dataset_size = (scan_width_px*scan_width_px)*(512*512)*bit_depth #in bits
+    if roi_mode==128:
+        cam_size=512*128
+    elif roi_mode==256:
+        cam_size=512*256
+    else:
+        cam_size=512*512
+
+    predicted_dataset_size = (scan_width_px*scan_width_px)*cam_size*bit_depth #in bits
     predicted_dataset_size_gbytes = (predicted_dataset_size/8)/1e9
     predicted_dataset_size_with_buffer = predicted_dataset_size_gbytes*1.2
     free_ram = psutil.virtual_memory().free/1e9
-    print(f"There are {free_ram} Gb of RAM available,dataset predicted to be {predicted_dataset_size_with_buffer}Gb")
-    will_work = False
+    if verbose:
+        print(f"There are {free_ram} Gb of RAM available,dataset predicted to be {predicted_dataset_size_with_buffer}Gb")
+    #will_work = False
     if free_ram>predicted_dataset_size_with_buffer:
         will_work = True
+    else:
+        will_work = False
     return will_work
 
 #TODO this needs to be split into sections by acquisition type and made into single layered dictionary
@@ -155,7 +167,10 @@ def calculate_FFT(image,fov=None): #TODO refactor to be less hacky
     if fov is not None:
         pixel_size = fov/image.shape[0]
         inverse_pixel_size = 1/pixel_size
-        fig,ax = plt.subplot()
+        fig,ax = plt.subplots(1,1)
+        extent_plt = result.shape[0]*inverse_pixel_size
+        ax.imshow(result,extent=(-extent_plt/2, extent_plt/2, -extent_plt/2, extent_plt/2))
+        plt.show()
     #TODO take field of view and make the FFT spatially calibrated
     return result
 
@@ -246,16 +261,16 @@ def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose
     This requires only the metadata dictionary for a particular acquisition
     If the metadata is not provided, it will take the current state of the microscope and use that"""
 
-    if metadata is None:
+    if metadata is None: #TODO change to metadata
         current_state = get_microscope_parameters()
         probe_current = current_state["Probe current (pA)"]*1e-12  # in amps
         scan_fov = current_state["FOV (um)"]*1e-6
         dwell_time_seconds = current_state["Dwell time (s)"]
-        print("Taking dwell time from UI window, may be different than acquisition conditions")
+        #print("Taking dwell time from UI window, may be different than acquisition conditions")
         probe_size = current_state["Beam diameter (d50) (nm)"]*1e-9  # in meters
         num_pixels = current_state["Scan width (px)"]
-        print("Taking number of pixels from UI window, may be different than acquisition conditions")
-
+        #print("Taking number of pixels from UI window, may be different than acquisition conditions")
+        #TODO if metadata is none, give only probe dose rate no pixel size or total dose
     else:
         probe_current = metadata["Probe current (pA)"]*1e-12 #in amps
         scan_fov = metadata["FOV (um)"]*1e-6
@@ -263,47 +278,52 @@ def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose
         probe_size = metadata["Beam diameter (d50) (nm)"]*1e-9 #in meters
         num_pixels = metadata["Scan width (px)"]
 
+
+
     electrons_per_amp = 1/scipy.constants.elementary_charge
     electrons_in_probe = electrons_per_amp*probe_current #electrons in probe per second
     electrons_per_pixel_dwell = electrons_in_probe*(dwell_time_seconds) #divide by dwell time converted to seconds
-
     """pixel size calculation"""
-
-
     pixel_size = scan_fov/num_pixels #in meters
     pixel_area = pixel_size**2
     electrons_per_meter_square_pixel = electrons_per_pixel_dwell/pixel_area
-
     """probe size calculation"""
-
     probe_area = np.pi*(probe_size/2)**2 #assume circular probe
     electrons_per_meter_square_probe = electrons_per_pixel_dwell/probe_area
-
     """Calculate pixel size to probe size ratio"""
     pixel_to_probe_ratio = pixel_size/probe_size
-    print(pixel_to_probe_ratio)
     if pixel_to_probe_ratio > 1:
         #print(f"Pixel size is {pixel_to_probe_ratio} times larger than probe size, undersampling conditions")
         sampling_conditions = "Undersampling"
+        #print("Reccomended to use probe size calculation")
+        reccomended = "Probe size calculation"
     elif pixel_to_probe_ratio < 1 :
         #print(f"Probe size is {pixel_to_probe_ratio} times larger than probe size, oversampling conditions")
         sampling_conditions = "Oversampling"
+        #print("Reccomended to use pixel size calculation")
+        reccomended = "Pixel size calculation"
     else:
-        #print("Probe size and pixel sizre are perfectly matched")
+        #print("Probe size and pixel size are perfectly matched")
         sampling_conditions = "Perfect sampling"
+
+    dose_rate_probe_angstroms = electrons_per_meter_square_probe*1e-20/dwell_time_seconds
+    dose_rate_pixel_angstroms = electrons_per_meter_square_pixel*1e-20/dwell_time_seconds
 
     dose_values = {"Pixel size":pixel_size,
                    "Probe size": probe_size,
+                   "Probe current (pA)":probe_current,
     "Pixel dose e-nm-2": electrons_per_meter_square_pixel*1e-18,
     "Probe dose e-nm-2" :electrons_per_meter_square_probe*1e-18,
     "Pixel dose e-A-2": electrons_per_meter_square_pixel*1e-20,
     "Probe dose e-A-2" :electrons_per_meter_square_probe*1e-20,
     "Pixel dose e-m-2": electrons_per_meter_square_pixel,
-    "Probe dose e-m-2":electrons_per_meter_square_probe,"Sampling conditions":sampling_conditions}
+    "Probe dose e-m-2":electrons_per_meter_square_probe,
+    "Pixel dose rate e-A-2s-1":dose_rate_pixel_angstroms,
+    "Probe dose rate-A-2s-1":dose_rate_probe_angstroms,
+    "Sampling conditions":sampling_conditions,
+                   "Reccomended calculation":reccomended}
 
     return dose_values #returns dose values and the unit
-
-
 
 def create_scalebar(ax,scalebar_size_pixels,metadata):
     print(scalebar_size_pixels,"scalebar requested in pixels")
@@ -469,3 +489,44 @@ def collect_metadata(acquisition_type,scan_width_px=None,use_precession=False,ca
     microscope_info["Z (mm)"] = grpc_client.stage.get_z()*1e3
 
     return microscope_info
+
+def scrollable_plot(image_list,defocus_intervals):
+    from pyquibbler import iquib, initialize_quibbler
+    initialize_quibbler()
+    def set_axes():
+        shape = image_list[0].shape
+        ax.set_aspect(1) #sets square aspect ratio for the plot
+        ax.set_xlim(0, shape[0]) #axes limited to size of dataset with no excess
+        ax.set_ylim(0, shape[1]) #axes limited to size of dataset with no excess
+
+    # The function to be called anytime a slider's value changes
+    def update(val):
+        print("Updating")
+        ax.clear() #clears the old data from the navigation plot
+        set_axes() #rebuilds the axes
+        ax.imshow(image_list[xposition.val],cmap="gray") #adds the new diffraction pattern
+        if defocus_intervals:
+            ax.set_title(f"Image {xposition.val}, defocus {defocus_intervals[xposition.val]} nm")
+        else:
+            ax.set_title("Image",xposition.val)
+        #ax.set_title(("Image", int(xposition.val))) #Adds title to diffraction plot
+        fig.canvas.draw_idle() #stops the interactive plotting
+
+    # Define initial plotting space
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))  # builds a figure with 2 subplots
+    set_axes()  # sets the axis scales
+    ax.imshow(image_list[int(len(image_list)/2)],cmap="gray")
+    ax.set_title(f"Image {int(len(image_list)/2)}, defocus {defocus_intervals[0]} nm")  # adds title to navigation image
+    # adjust the main plot to make room for the sliders
+    fig.subplots_adjust(left=0.25, bottom=0.25)
+
+    # Make a horizontal slider to control the position of the pattern in the x axis.
+    xpos_allowed = np.arange(start=0, stop=len(image_list),
+                             step=1)  # slider range is capped to integer number of pixels
+    xpos = fig.add_axes([0.1, 0.1, 0.8, 0.03])  # size of slider in plot
+    xposition = Slider(ax=xpos, label='Image', valmin=0, valstep=xpos_allowed, valmax=len(image_list)-1,
+                       valinit=int(len(image_list)/2))  # creates the slider
+
+    xpos_ref = xposition.on_changed(update)
+
+    plt.show(block=False)

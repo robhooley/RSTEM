@@ -15,7 +15,8 @@ import pandas as pd
 from collections import Counter
 
 from bisect import bisect_left
-
+from expert_pi.RSTEM.easy_4D_processing import scan_4D_basic
+from expert_pi.RSTEM.utilities import get_microscope_parameters
 from expert_pi import grpc_client
 from expert_pi.stream_clients import cache_client
 from expert_pi.controllers import scan_helper
@@ -37,26 +38,11 @@ def closest_coord(coord,coord_list):
     closest_coordinate = coord_list[coord_index]
     return closest_coordinate
 
-
-"""def create_circular_mask(h, w, center=None, radius=None):
-
-    if center is None:  # use the middle of the image
-        center = (int(w/2), int(h/2))
-    if radius is None:  # use the smallest distance between the center and image walls
-        radius = min(center[0], center[1], w-center[0], h-center[1])
-
-    Y, X = np.ogrid[:h, :w]
-    dist_from_center = np.sqrt((X - center[0])**2 + (Y-center[1])**2)
-
-    mask = dist_from_center <= radius
-    return mask
-"""
-
 def get_template_spot_positions(processed_template,spot_size_in_pixels):
     """Cross correlation for image filtering"""
-    spot_template = np.ones([15,15],dtype=np.float32)#define spot template background
+    spot_template = np.ones([16,16],dtype=np.float32)#define spot template background
     #spot_template = spot_template.astype(np.float32)
-    mask = create_circular_mask(spot_template.shape[0],spot_template.shape[1],radius=spot_size_in_pixels)
+    mask = create_circular_mask(spot_template.shape[0],spot_template.shape[1],mask_radius=spot_size_in_pixels,mask_center_coordinates=(spot_template.shape[0]/2,spot_template.shape[1]/2))
     mask = mask*255
     spot_template = spot_template*(mask == 255)
     img_for_template_matching = processed_template.astype(np.float32)
@@ -92,8 +78,8 @@ def get_template_spot_positions(processed_template,spot_size_in_pixels):
     template_spots = []
     spot_sizes = []
     for i in range(len(keypoints)): #change coordinates to camera centered TODO this should really be centered around the refined center
-        template_spots_x = keypoints[i].pt[0] + ((spot_template.shape[0]/2)-1)
-        template_spots_y = keypoints[i].pt[1] + ((spot_template.shape[0]/2)-1)
+        template_spots_x = keypoints[i].pt[0] + ((spot_template.shape[0]/2))
+        template_spots_y = keypoints[i].pt[1] + ((spot_template.shape[0]/2))
         template_spots.append((template_spots_x,template_spots_y))
         spot_sizes.append(keypoints[i].size)
 
@@ -101,17 +87,19 @@ def get_template_spot_positions(processed_template,spot_size_in_pixels):
 
 
     plt.rcParams["figure.figsize"] = [15, 15]
-    plt.imshow(processed_template,vmax=2000)
+    template_intensity = np.max(processed_template)/10
+
+    plt.imshow(processed_template,vmax=template_intensity)
 
     plt.title("Click on crosswise pairs of diffraction spots to enhance the center positioning")
-    crosswise_coords = plt.ginput(n=-1)
+    crosswise_coords = plt.ginput(n=-1,timeout=0)
     plt.close()
 
     """convert coordinates to be centered around camera center""" # TODO this should really be centered around the refined center
     centered_polygon_coords = []
     for coord in range(len(crosswise_coords)):
-        coord_x = crosswise_coords[coord][0] + ((spot_template.shape[0] / 2) - 1)
-        coord_y =  crosswise_coords[coord][1] + ((spot_template.shape[0] / 2) - 1)
+        coord_x = crosswise_coords[coord][0] + ((spot_template.shape[0] / 2)) #-1
+        coord_y =  crosswise_coords[coord][1] + ((spot_template.shape[0] / 2)) #-1
         centered_polygon_coords.append((coord_x,coord_y))
 
 
@@ -135,10 +123,10 @@ def get_template_spot_positions(processed_template,spot_size_in_pixels):
     list_mask = []
     for item in range(len(template_spots)):
         spot = template_spots[item]
-        distance = math.dist(spot,refined_center_spot_position)
+        distance = math.dist(spot,refined_center_spot_position) #
         #print("distance of spot",item, "is",distance,"pixels")
         distances.append(distance)
-        if distance < 10 or distance > 200:
+        if distance < 10 or distance > 256:
             list_mask.append(False)
         else:
             list_mask.append(True)
@@ -150,10 +138,15 @@ def get_template_spot_positions(processed_template,spot_size_in_pixels):
             thresholded_spots.append(template_spots[spot])
 
     fig, ax = plt.subplots(1)
-    ax.imshow(processed_template, vmax=2000)
+    ax.imshow(processed_template, vmax=template_intensity)
     for spot in range(len(thresholded_spots)):
         circle = Circle(thresholded_spots[spot], 5, fill=False, color="blue")
         ax.add_patch(circle)
+        ax.arrow(thresholded_spots[spot][0],thresholded_spots[spot][1], 2, 0, color="blue")
+        ax.arrow(thresholded_spots[spot][0],thresholded_spots[spot][1], 0, 2, color="blue")
+        ax.arrow(thresholded_spots[spot][0],thresholded_spots[spot][1], -2, 0, color="blue")
+        ax.arrow(thresholded_spots[spot][0],thresholded_spots[spot][1], 0, -2, color="blue")
+
     circle = Circle(refined_center_spot_position, 10, fill=False, color="red")
     ax.add_patch(circle)
     ax.arrow(refined_center_spot_position[0],refined_center_spot_position[1],5,0,color="red")
@@ -163,9 +156,9 @@ def get_template_spot_positions(processed_template,spot_size_in_pixels):
 
     plt.show()
 
-    return template_spots,refined_center_spot_position, distances
+    return template_spots,refined_center_spot_position
 
-def create_spot_masks(template_spots,image,integration_mask_radius):
+def create_spot_masks_list(template_spots,image,integration_mask_radius):
     """Generates the spot masks so the function is only called once"""
     h, w = image.shape[:2] #TODO refactor
     spot_mask_list = []
@@ -191,24 +184,21 @@ def get_spot_intensities(template_spots,image,spot_mask_list):
         spot_intensities.append(integrated_intensity)  # adds the intensity to the list of spot intensities
     return spot_intensities
 
-def acquire_datapoint(num_pixels,pixel_time,output="sum"): #checked ok
-    scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1, #run acquisition
-                                               detectors=[DT.Camera])
-    header, data = cache_client.get_item(scan_id, num_pixels**2) #retrieve dataset
-    shape4D = (header['scanDimensions'][1], header['scanDimensions'][2], data['cameraData'].shape[1], data['cameraData'].shape[2]) #defines shape of 4D acquisition
-    camera_data = data['cameraData'].reshape(shape4D)
+def acquire_datapoint(num_pixels,camera_frequency_hz,output="sum",use_precession=True): #checked ok
+    point = scan_4D_basic(num_pixels,camera_frequency_hz,use_precession)
+    camera_data = point[0]
     if output == "sum":
         output_data = np.sum(camera_data,(0,1),dtype=np.float32) #sums 4D acquisition to single diffraction pattern
-    if output == "individual":
+    else:
         output_data = camera_data #gives an array where shape is shape4D (scanX,scanY,cameraX,cameraY)
-
     return output_data
 
 def beam_size_matched_acquisition(camera_FPS=4500,pixels=32): #checked ok
-    beam_size = grpc_client.illumination.get_spot_size() #TODO units tbc
-    matched_sampling_fov = beam_size["d50"]*pixels #calculates FOV for 1:1 beam:pixel sampling
+    optical_mode = grpc_client.microscope.get_optical_mode()
+
+    beam_size = grpc_client.illumination.get_beam_diameter() #in meters
+
+    matched_sampling_fov = beam_size*pixels #calculates FOV for 1:1 beam:pixel sampling
     grpc_client.scanning.set_field_width(matched_sampling_fov) #set fov in meters
-    matched_sampling_fov = matched_sampling_fov*1e9 #multiplies to nanometers
-    matched_sampling_fov = round(matched_sampling_fov,2) #rounds to 2dp
-    diffraction_pattern = acquire_datapoint(pixels,camera_FPS,"sum") #acquires a 4D-dataset and sums to 1 diffraction pattern
-    return matched_sampling_fov,diffraction_pattern
+    diffraction_pattern = acquire_datapoint(pixels,camera_FPS,"sum",use_precession=True) #acquires a 4D-dataset and sums to 1 diffraction pattern
+    return diffraction_pattern,matched_sampling_fov
