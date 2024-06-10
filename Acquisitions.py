@@ -1,5 +1,6 @@
 from expert_pi.__main__ import window
 from expert_pi import grpc_client
+import matplotlib.pyplot as plt
 from expert_pi.controllers import scan_helper
 from expert_pi.stream_clients import cache_client
 from expert_pi.grpc_client.modules._common import DetectorType as DT
@@ -22,7 +23,7 @@ from expert_pi.RSTEM.utilities import get_microscope_parameters
 #registration_model(np.concatenate([original_image,translated_image],axis=1, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
 #registration_model(image, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
 #super_resolution_model(image=image, model_name='SwinIRImageDenoiser', host='172.19.1.16', port='7447') #for denoising
-#manager = TorchserveRestManager(inference_port='8600', management_port='8081', host='172.19.1.16', image_encoder='.png')
+#manager = TorchserveRestManager(inference_port='8080', management_port='8081', host='172.16.2.86', image_encoder='.tiff')
 #manager.infer(image=image, model_name='spot_segmentation') #spot detection
 #manager.list_models()
 
@@ -36,7 +37,7 @@ host_global = '172.16.2.86'
 host = host_global
 
 #TODO test with new rounded defocus offset numbers
-def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pixel_time_us=5):
+def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=None,pixel_time=None):
     """Parameters
     extent_nm: Range the focal series should cover split equally around the current focus value
     steps: how many total steps the focal series should cover
@@ -44,6 +45,17 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pi
     ADF: True or False
     num_pixels: default 1024
     pixel_time_us: default 5us"""
+
+    if (steps/2) % 2 == 0:
+        steps+1
+        print("Adding a step so series passes at zero")
+    else:
+        pass
+
+    if pixel_time is None:
+        pixel_time = window.scanning.pixel_time_spin.value()*1e-6
+    if num_pixels is None:
+        num_pixels=1024
 
     current_defocus = grpc_client.illumination.get_condenser_defocus(CFT.C3)
     lower_defocus = current_defocus-(extent_nm*1e-9/2)
@@ -53,7 +65,7 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pi
     image_series = []
     defocus_offsets = []
     print("Acquiring defocus series")
-    for i in tqdm(defocus_intervals):
+    for i in tqdm(defocus_intervals,unit="Frame"):
 
         grpc_client.illumination.set_condenser_defocus(i,CFT.C3) #get correct command
         defocus_now = grpc_client.illumination.get_condenser_defocus(CFT.C3)
@@ -62,7 +74,7 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pi
         defocus_offset_nm = defocus_offset*1e9
         defocus_offsets.append(np.round(defocus_offset_nm,decimals=1))
 
-        scan_id = scan_helper.start_rectangle_scan(pixel_time=(pixel_time_us*1e-6), total_size=num_pixels, frames=1,
+        scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
                                                    detectors=(DT.BF,DT.HAADF))
         header, data = cache_client.get_item(scan_id, num_pixels**2)  # retrive small measurements in one chunk
 
@@ -76,6 +88,8 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pi
             BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
             ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
             image_series.append((BF_image,ADF_image))
+
+    grpc_client.illumination.set_condenser_defocus(current_defocus, CFT.C3)
 
     return image_series,defocus_offsets
 
@@ -117,7 +131,7 @@ def acquire_STEM( fov_um=None,pixel_time_us=None,num_pixels=1024,scan_rotation_d
 
     BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
     ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
-    return([BF_image,ADF_image],metadata)
+    return(BF_image,ADF_image,metadata)
 
 
 #tested ok
@@ -349,3 +363,26 @@ def align_series_cross_correlation(image_series):
         translated_list.append(translated_image)
 
     return translated_list,offsets,correlation_coefficients
+
+def get_spot_positions_ML(image,threshold=0):
+    manager = TorchserveRestManager(inference_port='8080', management_port='8081', host='172.16.2.86',
+                                    image_encoder='.tiff')
+    results = manager.infer(image=image, model_name='diffraction_spot_segmentation_medium')  # spot detection
+    spots = results["objects"]
+    spot_list = []
+    areas = []
+    for i in range(len(spots)):
+        if spots[i]["mean_intensity"] > threshold:
+            spot_coords = spots[i]["center"]
+            spot_list.append(spot_coords)
+            area = spots[i]["area"]
+            areas.append(area)
+    for i in spot_list:
+        plt.plot(i[0],i[1],"r+")
+        plt.imshow(image,vmax=np.average(image*10),extent=(0,1,1,0),cmap="gray")
+
+
+    plt.show(block=False)
+    output= (spot_list,areas)
+
+    return output

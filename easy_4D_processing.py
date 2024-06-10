@@ -71,21 +71,21 @@ def selected_area_diffraction(data_array):
 
     if type(data_array) is tuple: #checks for metadata dictionary #TODO Checked ok with and without metadata
         image_array = data_array[0]
-        metadata = data_array[1]
-        print("Metadata exists")
+        #metadata = data_array[1]
+        #print("Metadata exists")
 
     else:
         image_array = data_array
-        metadata=None
-        print("Metadata not present")
+        #metadata=None
+        #print("Metadata not present")
 
     camera_data_shape = image_array[0][0].shape #shape of first image to get image dimensions
     dataset_shape = image_array.shape[0],image_array.shape[1] #scanned region shape
     radius = 30  # pixels for rough VBF image construction
     VBF_intensity_list = [] #empty list to take virtual bright field image sigals
     integration_mask = create_circular_mask(camera_data_shape[0], camera_data_shape[1], mask_radius=radius)
-    for row in image_array: #iterates through array
-        for pixel in row:
+    for row in image_array: #iterates through array rows
+        for pixel in row: #in each row iterates through pixels
             VBF_intensity = np.sum(pixel[integration_mask])  # measures the intensity in the masked image
             VBF_intensity_list.append(VBF_intensity) #adds to the list
 
@@ -281,8 +281,8 @@ def multi_VDF(data_array,radius=None):
         ax.spines['left'].set_linewidth(3) #line thickness
         plt.setp(ax, xticks=[], yticks=[]) #removes ticks
     plt.gray() #sets plots to be grayscale
-    #plt.show() #shows the plot
-    plt.close()
+    plt.show() #shows the plot
+    #plt.close()
 
     return annotated_image ,sum_diffraction,DF_images #annotated image is scaled to show the final figure scale which is small #TODO make this better, maybe plot it again before export?
 

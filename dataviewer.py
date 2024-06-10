@@ -7,9 +7,13 @@ from matplotlib.widgets import Button, Slider
 import easygui as g
 import cv2 as cv2
 
-#from expert_pi.RSTEM.utilities import get_microscope_parameters,create_circular_mask
+from expert_pi.RSTEM.utilities import get_microscope_parameters,create_circular_mask
 
-from utilities import create_circular_mask
+#from utilities import create_circular_mask
+
+def dataviewer(file):
+    a,b,c,d,e = dataviewer_4D(file)
+    print(len(a))
 
 def dataviewer_4D(data_array,background_image=None): #TODO consider adding in scalebars
 
@@ -42,6 +46,7 @@ def dataviewer_4D(data_array,background_image=None): #TODO consider adding in sc
 
     # The function to be called anytime a slider's value changes
     def update(val):
+        print("Updating")
         ax[0].clear() #clears the old data from the navigation plot
         ax[1].clear() #clears the old data from the diffraction plot
         set_axes() #rebuilds the axes
@@ -133,8 +138,8 @@ def dataviewer_4D(data_array,background_image=None): #TODO consider adding in sc
     yposition = Slider(ax=ypos,label="Y position",valmin=0,valmax=ypos_allowed[-1],valstep=ypos_allowed,valinit=0,orientation="vertical") #creates the slider
 
     # register the update function with each slider
-    xposition.on_changed(update) #tracks the sliders to see if they have changed, if so, runs the update function
-    yposition.on_changed(update) #tracks the sliders to see if they have changed, if so, runs the update function
+    xpos_ref = xposition.on_changed(update) #tracks the sliders to see if they have changed, if so, runs the update function
+    ypos_ref = yposition.on_changed(update) #tracks the sliders to see if they have changed, if so, runs the update function
 
     # Create a `matplotlib.widgets.Button` to reset the sliders to initial values.
     reset_axes = fig.add_axes([0.8, 0.025, 0.1, 0.04]) #adds a spot for the reset button
@@ -154,6 +159,7 @@ def dataviewer_4D(data_array,background_image=None): #TODO consider adding in sc
     if len(dp_save_list) != 0: #if the save button has been pressed
         save_list(dp_save_list,position_save_list,VBF_save_list) #save the data to disk
 
+    #return dp_save_list,xposition,yposition,savebutton,resetbutton
 
 def virtual_ADF(data_array):
 
