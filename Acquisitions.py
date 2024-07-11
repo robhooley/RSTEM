@@ -36,7 +36,6 @@ host_global = '172.16.2.86'
 
 host = host_global
 
-#TODO test with new rounded defocus offset numbers
 def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=None,pixel_time=None):
     """Parameters
     extent_nm: Range the focal series should cover split equally around the current focus value
@@ -255,17 +254,15 @@ def acquire_series(num_frames, pixel_time_us=None,num_pixels=None ):
 # tested ok without scan rotation
 # TODO reintroduce scan rotation
 #TODO untested
-def ML_drift_corrected_imaging_with_scan_rotation(num_frames, pixel_time_us=None, num_pixels=None, scan_rotation=0):
+def ML_drift_corrected_imaging_with_scan_rotation(num_frames, pixel_time=None, num_pixels=None, scan_rotation=0):
     R = np.array([[np.cos(scan_rotation), np.sin(scan_rotation)],
                   [-np.sin(scan_rotation), np.cos(scan_rotation)]])
 
     if scan_rotation is not None:
         grpc_client.scanning.set_rotation(scan_rotation)
 
-    if pixel_time_us == None:
+    if pixel_time == None:
         pixel_time = window.scanning.pixel_time_spin.value()/1e6  # gets current pixel time from UI and convert to seconds
-    else:
-        pixel_time = pixel_time_us/1e6
 
     if num_pixels == None:
         num_pixels = 1024
@@ -275,13 +272,10 @@ def ML_drift_corrected_imaging_with_scan_rotation(num_frames, pixel_time_us=None
     image_offsets = []
 
     fov = grpc_client.scanning.get_field_width()
-
     initial_scan = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
                                                     detectors=[DT.BF, DT.HAADF])
     header, data = cache_client.get_item(initial_scan, num_pixels**2)  # retrive small measurements in one chunk
-
     initial_shift = grpc_client.illumination.get_shift(grpc_client.illumination.DeflectorType.Scan)
-
     initial_BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
     BF_images_list.append(initial_BF_image)
     initial_ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
@@ -319,9 +313,6 @@ def ML_drift_corrected_imaging_with_scan_rotation(num_frames, pixel_time_us=None
     aligned_ADF_series, summed_ADF, _ = align_series_ML(ADF_images_list)
 
     return (aligned_BF_series, summed_BF), (aligned_ADF_series, summed_ADF)
-
-
-
 
 def align_series_ML(image_series): #single series in a list
 
@@ -367,22 +358,28 @@ def align_series_cross_correlation(image_series):
 def get_spot_positions_ML(image,threshold=0):
     manager = TorchserveRestManager(inference_port='8080', management_port='8081', host='172.16.2.86',
                                     image_encoder='.tiff')
-    results = manager.infer(image=image, model_name='diffraction_spot_segmentation_medium')  # spot detection
+    results = manager.infer(image=image, model_name='diffraction_spot_segmentation')  # spot detection
     spots = results["objects"]
     spot_list = []
     areas = []
+    spot_radii = []
+    fix,ax = plt.subplots(1,1)
+    shape = image.shape()
     for i in range(len(spots)):
         if spots[i]["mean_intensity"] > threshold:
             spot_coords = spots[i]["center"]
             spot_list.append(spot_coords)
             area = spots[i]["area"]
             areas.append(area)
+            radius = np.sqrt(area/np.pi)/shape[0]
+            spot_radii.append(radius)
+
     for i in spot_list:
-        plt.plot(i[0],i[1],"r+")
+        ax.plot(i[0],i[1],"r+")
         plt.imshow(image,vmax=np.average(image*10),extent=(0,1,1,0),cmap="gray")
 
 
     plt.show(block=False)
-    output= (spot_list,areas)
+    output= (spot_list,spot_radii)
 
     return output

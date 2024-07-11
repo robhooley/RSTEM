@@ -490,6 +490,7 @@ def collect_metadata(acquisition_type,scan_width_px=None,use_precession=False,ca
 
     return microscope_info
 
+#TODO something in quibbler messes with Numba
 def scrollable_plot(image_list,defocus_intervals):
     from pyquibbler import iquib, initialize_quibbler
     initialize_quibbler()
@@ -524,7 +525,7 @@ def scrollable_plot(image_list,defocus_intervals):
     xpos_allowed = np.arange(start=0, stop=len(image_list),
                              step=1)  # slider range is capped to integer number of pixels
     xpos = fig.add_axes([0.1, 0.1, 0.8, 0.03])  # size of slider in plot
-    xposition = Slider(ax=xpos, label='Image', valmin=0, valstep=xpos_allowed, valmax=len(image_list)-1,
+    xposition = Slider(ax=xpos, label='Image', valmin=0, valstep=xpos_allowed, valmax=len(image_list),
                        valinit=int(len(image_list)/2))  # creates the slider
 
     xpos_ref = xposition.on_changed(update)

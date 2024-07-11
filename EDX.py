@@ -27,11 +27,10 @@ from expert_pi.view import main_window
 
 import utilities
 
-window = main_window.MainWindow()
-controller = main_controller.MainController(window)
-from expert_pi.RSTEM.utilities import generate_colorlist,generate_colormaps
+#window = main_window.MainWindow()
+#controller = main_controller.MainController(window)
 
-from expert_pi.console_threads import start_threaded_function
+from expert_pi.RSTEM.utilities import generate_colorlist,generate_colormaps
 
 host_F4 = ""
 host_P3 = "172.20.32.1" #TODO confirm
@@ -89,21 +88,20 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
     with open(f"{folder}{file_name}_0.pdat", "wb") as f:
         pickle.dump(map_data[0], f) #first item from map data list of scans
 
-
     image_list = []
     anchor_image = data["stemData"][tracking_signal].reshape(num_pixels, num_pixels)
     image_list.append(anchor_image)
 
-    if drift_correction_method == "ML":
-        drift_correction_method_named = "TESCAN's machine learning"
-    elif drift_correction_method == "patches" or "Patches":
-        drift_correction_method_named = "OpenCV sub-image template matching"
-    else:
-        print("Drift correction is not being performed")
-
-    print(f"Drift correction is using {drift_correction_method_named} for image registration")
-
     if verbose_logging == True: #TODO untested
+        if drift_correction_method == "ML":
+            drift_correction_method_named = "TESCAN's machine learning"
+        elif drift_correction_method == "patches" or "Patches":
+            drift_correction_method_named = "OpenCV sub-image template matching"
+        else:
+            print("Drift correction is not being performed")
+
+        print(f"Drift correction is using {drift_correction_method_named} for image registration")
+        #Initialise a figure for tracking image and drift plot
         fig = plt.figure()
         ax0,ax1 = plt.subplots(1,2)
         image_view = ax0.imshow(anchor_image,cmap="grey")
@@ -147,8 +145,9 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
             print("Map data RAM usage",getsizeof(map_data)*1e-6,"Megabytes")
             print("Image list RAM usage",getsizeof(image_list)*1e-6,"Megabytes")
             image_view.set_data(series_image) #updates image plot
-            ax1.scatter(shift_offset[0],shift_offset[1])
-            QApplication.processEvents() #sends command to backend to update plots
+            ax1.scatter(shift_offset[0]*1e9,shift_offset[1]*1e9)
+            fig.canvas.draw()
+            fig.canvas.flush_events()
 
     """Add in write metadata function"""
     metadata = utilities.get_microscope_parameters(scan_width_px=num_pixels,use_precession=False,STEM_dwell_time=pixel_time,scan_rotation=scan_rotation)
