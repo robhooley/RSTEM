@@ -17,6 +17,8 @@ import matplotlib.transforms as tfrms
 from expert_pi import grpc_client
 from expert_pi.__main__ import window
 
+from bda_functions import scan_4D_tool
+
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None):
     if mask_center_coordinates is None:  # use the middle of the image
         mask_center_coordinates = (int(image_width/2), int(image_height/2))
@@ -531,3 +533,34 @@ def scrollable_plot(image_list,defocus_intervals):
     xpos_ref = xposition.on_changed(update)
 
     plt.show(block=False)
+
+
+
+def acquire_precession_tilt_series(upper_limit_degrees):
+    filepath = g.diropenbox("Select directory to save series","Save location")
+    beam_size = grpc_client.illumination.get_beam_diameter()
+
+    grpc_client.scanning.set_scan_field_width(beam_size*2) # TODO check if this works
+    image_list = []
+    angle_list = []
+    for i in range(0,(upper_limit_degrees*10)+1,1):
+        print(f"Current precession angle {i} degrees")
+        radians = np.deg2rad(i)
+        grpc_client.scanning.set_precession_angle(radians)
+        images = scan_4D_tool(8,10,True)
+        single_pattern = np.sum(np.asarray(images,dtype=np.uint64))
+        image_list.append(single_pattern)
+        angle_list.append(i)
+
+    annotated_images = []
+    for i in range(len(image_list)):
+        image = image_list[i].astype(np.uint8)
+        angle = angle_list[i]
+        text = f"Precession angle {angle} degrees"
+        cv2.putText(image, text, (10,10), fontFace=cv2.FONT_HERSHEY_COMPLEX, fontScale=1.5, color=(255, 225, 255))
+        filename = filepath+f"\precession angle {angle} degrees.tiff"
+        cv2.imwrite(filename,image)
+        annotated_images.append(image)
+
+    return image_list,angle_list
+
