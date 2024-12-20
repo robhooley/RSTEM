@@ -15,14 +15,24 @@ from matplotlib.path import Path as matpath
 import fnmatch
 import matplotlib.colors as mcolors
 
-from expert_pi import grpc_client
-from expert_pi.controllers import scan_helper
-from expert_pi.stream_clients import cache_client
-from expert_pi.grpc_client.modules._common import DetectorType as DT
-
 #comment this out depending on where the script is located
-from expert_pi.RSTEM.utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,check_memory #utilities file in RSTEM directory
+from expert_pi.RSTEM.utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,check_memory,collect_metadata #utilities file in RSTEM directory
 #from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,check_memory
+
+from expert_pi import grpc_client
+from expert_pi.app import scan_helper
+from expert_pi.grpc_client.modules._common import DetectorType as DT, CondenserFocusType as CFT
+from serving_manager.api import TorchserveRestManager
+from expert_pi.app import app
+from expert_pi.gui import main_window
+
+window = main_window.MainWindow()
+controller = app.MainApp(window)
+cache_client = controller.cache_client
+
+
+
+
 
 def scan_4D_basic(scan_width_px=128,camera_frequency_hz=4500,use_precession=False):
     """Parameters
@@ -34,12 +44,15 @@ def scan_4D_basic(scan_width_px=128,camera_frequency_hz=4500,use_precession=Fals
 
     sufficient_RAM = check_memory(camera_frequency_hz,scan_width_px)
     if sufficient_RAM == False:
-        print("This dataset will probably not fit into RAM, trying anyway but expect a crash")
-    metadata = get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz) #gets the microscope and acquisition metadata
+        print("This dataset might not fit into RAM, trying anyway")
+
+    #metadata = get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz) #gets the microscope and acquisition metadata
+    metadata = collect_metadata(acquisition_type="Camera",scan_width_px=scan_width_px,use_precession=use_precession,pixel_time=1/camera_frequency_hz,scan_rotation=0,edx_enabled=False,camera_pixels=512)
+
     if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(DT.HAADF) == True: #if either STEM detector is inserted
         grpc_client.stem_detector.set_is_inserted(DT.BF,False) #retract BF detector
         grpc_client.stem_detector.set_is_inserted(DT.HAADF, False) #retract ADF detector
-        for i in tqdm(range(5),desc="stabilising after detector retraction",unit=""):
+        for i in tqdm(range(5),desc="Stabilising after STEM detector retraction",unit=""):
             sleep(1) #wait for 5 seconds
     grpc_client.projection.set_is_off_axis_stem_enabled(False) #puts the beam back on the camera if in off-axis mode
     sleep(0.2)  # stabilisation after deflector change
@@ -69,15 +82,10 @@ def selected_area_diffraction(data_array):
     """Takes a 4D data array as produced by scan_4D_basic and allows the user to select virtual apertures in the image
     to integrate diffraction from"""
 
-    if type(data_array) is tuple: #checks for metadata dictionary #TODO Checked ok with and without metadata
+    if type(data_array) is tuple: #checks for metadata dictionary
         image_array = data_array[0]
-        #metadata = data_array[1]
-        #print("Metadata exists")
-
     else:
         image_array = data_array
-        #metadata=None
-        #print("Metadata not present")
 
     camera_data_shape = image_array[0][0].shape #shape of first image to get image dimensions
     dataset_shape = image_array.shape[0],image_array.shape[1] #scanned region shape
@@ -162,24 +170,17 @@ def multi_VDF(data_array,radius=None):
         List of Virtual Dark Field images
      """
 
-    if type(data_array) is tuple: #checks for metadata dictionary #TODO works ok with and without metadata
+    if type(data_array) is tuple: #checks for metadata dictionary
         image_array = data_array[0]
         metadata = data_array[1]
-        #print("Metadata exists")
-        predicted_spot_radius = spot_radius_in_px(data_array)
-
-        if radius is not None:
-            radius = radius
-        else:
-            radius = predicted_spot_radius*1.3
-            print(f"The predicted spot radius is {predicted_spot_radius} pixels, adding a 30% buffer for easy positioning")
+        if radius is None:
+            radius =  (metadata["Predicted diffraction spot diameter (px)"]/2)*1.3
+            print(f"The predicted spot radius is {radius} pixels")
     else:
         image_array = data_array
-        metadata=None
-        print("Metadata not present")
-        if radius is not None:
-            radius = radius
-        elif radius is None:
+        #metadata=None
+        #print("Metadata not present")
+        if radius is None:
             radius = 20
 
     dataset_shape = image_array.shape[0], image_array.shape[1]

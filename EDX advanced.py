@@ -1,14 +1,11 @@
 import os
 import threading
-from expert_pi import grpc_client
-from expert_pi.controllers import scan_helper
-from expert_pi.stream_clients import cache_client
+
 from stem_measurements import shift_measurements
 from PyQt5.QtWidgets import QApplication
 import pickle
 from time import sleep
 import numpy as np
-from expert_pi.grpc_client.modules.scanning import DetectorType as DT
 import easygui as g
 import cv2 as cv2
 from tqdm import tqdm
@@ -22,15 +19,20 @@ from grid_strategy import strategies
 from PIL import Image
 from serving_manager.api import registration_model
 from stem_measurements import edx_processing
-from expert_pi.controllers import main_controller
-from expert_pi.view import main_window
 
-import utilities
+from expert_pi.__main__ import window #TODO something is not right with this on some older versions of expi
+from expert_pi import grpc_client
+from expert_pi.app import scan_helper
+from expert_pi.grpc_client.modules._common import DetectorType as DT, CondenserFocusType as CFT,RoiMode as RM
+from serving_manager.api import TorchserveRestManager
+from expert_pi.app import app
+from expert_pi.gui import main_window
 
 window = main_window.MainWindow()
-controller = main_controller.MainController(window)
+controller = app.MainApp(window)
+cache_client = controller.cache_client
 
-from expert_pi.RSTEM.utilities import generate_colorlist,generate_colormaps
+from expert_pi.RSTEM.utilities import generate_colorlist,generate_colormaps,collect_metadata
 
 host_F4 = ""
 host_P3 = "172.20.32.1" #TODO confirm
@@ -53,10 +55,11 @@ def acquire_EDX_map_core(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num
 
     folder = g.diropenbox("Select folder to save mapping layers into")
     file_name = "\\EDX_map_frame"
-    print("Predicted measurement time:", pixel_time*num_pixels**2*frames/60, "min")
+    print("Predicted measurement time:", (pixel_time*num_pixels**2*frames/60)*1.2, "min")
 
     overscan_percentage = 1+(overscan/100)
-    print(f"overscanning by {overscan}%")
+    #print(f"overscanning by {overscan}%")
+
 
     R = np.array([[np.cos(scan_rotation), np.sin(scan_rotation)],
                  [-np.sin(scan_rotation), np.cos(scan_rotation)]])
@@ -123,8 +126,8 @@ def acquire_EDX_map_core(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num
             #QApplication.processEvents() #sends command to backend to update plots
 
     """Add in write metadata function"""
-    metadata = utilities.get_microscope_parameters(scan_width_px=num_pixels,use_precession=False,STEM_dwell_time=pixel_time,scan_rotation=scan_rotation)
-    metadata["Number of frames"] =frames
+    metadata = collect_metadata(acquisition_type="EDX",scan_width_px=num_pixels,use_precession=False,pixel_time=pixel_time,scan_rotation=scan_rotation,edx_enabled=True,camera_pixels=512,num_frames=frames)
+
 
     return map_data,metadata
 

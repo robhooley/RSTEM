@@ -1,14 +1,11 @@
 import os
 import threading
-from expert_pi import grpc_client
-from expert_pi.controllers import scan_helper
-from expert_pi.stream_clients import cache_client
+
 from stem_measurements import shift_measurements
-from PyQt5.QtWidgets import QApplication
+#from PyQt5.QtWidgets import QApplication
 import pickle
 from time import sleep
 import numpy as np
-from expert_pi.grpc_client.modules.scanning import DetectorType as DT
 import easygui as g
 import cv2 as cv2
 from tqdm import tqdm
@@ -21,11 +18,25 @@ import matplotlib.pyplot as plt
 from grid_strategy import strategies
 from PIL import Image
 from serving_manager.api import registration_model
-from stem_measurements import edx_processing
-from expert_pi.controllers import main_controller
-from expert_pi.view import main_window
 
-import utilities
+#from expert_pi.__main__ import window #TODO something is not right with this on some older versions of expi
+from expert_pi import grpc_client
+from expert_pi.app import scan_helper
+from expert_pi.grpc_client.modules._common import DetectorType as DT, CondenserFocusType as CFT,RoiMode as RM
+from serving_manager.api import TorchserveRestManager
+from expert_pi.app import app
+from expert_pi.gui import main_window
+
+window = main_window.MainWindow()
+controller = app.MainApp(window)
+cache_client = controller.cache_client
+
+from measurements import edx_processing
+from measurements.shift_measurements import get_offset_of_pictures
+#from expert_pi.controllers import main_controller
+#from expert_pi.view import main_window
+
+#import utilities
 
 #window = main_window.MainWindow()
 #controller = main_controller.MainController(window)
@@ -42,7 +53,8 @@ host = host_global
 
 #TODO untested
 #TODO check reasonable map sizes with RAM usage (1000x1000 maps for 1000 scans)
-def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixels=1024,drift_correction_method="patches",verbose_logging=False):
+
+def acquire_EDX_map(frames=10,pixel_time=10e-6,fov=None,scan_rotation=0,num_pixels=512,drift_correction_method="patches",verbose_logging=False,precession=False):
     """Parameters
     frames: number of scans
     pixel_time: in seconds
@@ -80,7 +92,7 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
     print(f"Image tracking using {tracking_signal} images")
 
     map_data = []
-    scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1, detectors=[DT.BF, DT.HAADF, DT.EDX1, DT.EDX0])
+    scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1, detectors=[DT.BF, DT.HAADF, DT.EDX1, DT.EDX0],use_precession=precession)
     header, data = cache_client.get_item(scan_id, num_pixels**2)
     initial_shift = grpc_client.illumination.get_shift(grpc_client.illumination.DeflectorType.Scan)
     map_data.append((header,data,initial_shift))
@@ -150,10 +162,11 @@ def acquire_EDX_map(frames=100,pixel_time=5e-6,fov=None,scan_rotation=0,num_pixe
             fig.canvas.flush_events()
 
     """Add in write metadata function"""
-    metadata = utilities.get_microscope_parameters(scan_width_px=num_pixels,use_precession=False,STEM_dwell_time=pixel_time,scan_rotation=scan_rotation)
-    metadata["Number of frames"] =frames
+    #metadata = utilities.get_microscope_parameters(scan_width_px=num_pixels,use_precession=False,STEM_dwell_time=pixel_time,scan_rotation=scan_rotation) #TODO fix import of utilities
+    #metadata["Number of frames"] =frames
 
-    return map_data,metadata
+    return map_data #,metadata
+
 
 def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None,post_align=False):
     """parameters
@@ -302,6 +315,7 @@ def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None,post
 
     HAADF = ADFs[0]
     cv2.imwrite(save_folder + '/HAADF_0.tif',HAADF)
+
 
 def produce_spectrum(map_data=None,elements=None,normalise=False):
     edx_data = []

@@ -12,12 +12,24 @@ import scipy.constants
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import random
+
 from matplotlib.widgets import Slider
 import matplotlib.transforms as tfrms
-from expert_pi import grpc_client
-from expert_pi.__main__ import window
+#from expert_pi.__main__ import window
 
-from bda_functions import scan_4D_tool
+from expert_pi.__main__ import window #TODO something is not right with this on some older versions of expi
+from expert_pi import grpc_client
+from expert_pi.app import scan_helper
+from expert_pi.grpc_client.modules._common import DetectorType as DT, CondenserFocusType as CFT,RoiMode as RM
+from serving_manager.api import TorchserveRestManager
+from expert_pi.app import app
+from expert_pi.gui import main_window
+
+window = main_window.MainWindow()
+controller = app.MainApp(window)
+cache_client = controller.cache_client
+
+#from bda_functions import scan_4D_tool
 
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None):
     if mask_center_coordinates is None:  # use the middle of the image
@@ -54,7 +66,6 @@ def get_number_of_nav_pixels(): #checked ok
     pixels = int(scan_field_pixels.replace(" px", "")) #replaces the px with nothing and converts to an integer
     return pixels
 
-
 def check_memory(camera_frequency_hz,scan_width_px,roi_mode=False,verbose=False):
     """Checks the current acquisitions size and checks the amount of RAM available to see if it will fit cleanly
     Returns True or False if the dataset will fit in the RAM"""
@@ -72,11 +83,10 @@ def check_memory(camera_frequency_hz,scan_width_px,roi_mode=False,verbose=False)
 
     predicted_dataset_size = (scan_width_px*scan_width_px)*cam_size*bit_depth #in bits
     predicted_dataset_size_gbytes = (predicted_dataset_size/8)/1e9
-    predicted_dataset_size_with_buffer = predicted_dataset_size_gbytes*1.2
+    predicted_dataset_size_with_buffer = predicted_dataset_size_gbytes*1.1
     free_ram = psutil.virtual_memory().free/1e9
     if verbose:
         print(f"There are {free_ram} Gb of RAM available,dataset predicted to be {predicted_dataset_size_with_buffer}Gb")
-    #will_work = False
     if free_ram>predicted_dataset_size_with_buffer:
         will_work = True
     else:
@@ -263,8 +273,8 @@ def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose
     This requires only the metadata dictionary for a particular acquisition
     If the metadata is not provided, it will take the current state of the microscope and use that"""
 
-    if metadata is None: #TODO change to metadata
-        current_state = get_microscope_parameters()
+    if metadata is None:
+        current_state = collect_metadata()
         probe_current = current_state["Probe current (pA)"]*1e-12  # in amps
         scan_fov = current_state["FOV (um)"]*1e-6
         dwell_time_seconds = current_state["Dwell time (s)"]
@@ -294,19 +304,7 @@ def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose
     electrons_per_meter_square_probe = electrons_per_pixel_dwell/probe_area
     """Calculate pixel size to probe size ratio"""
     pixel_to_probe_ratio = pixel_size/probe_size
-    if pixel_to_probe_ratio > 1:
-        #print(f"Pixel size is {pixel_to_probe_ratio} times larger than probe size, undersampling conditions")
-        sampling_conditions = "Undersampling"
-        #print("Reccomended to use probe size calculation")
-        reccomended = "Probe size calculation"
-    elif pixel_to_probe_ratio < 1 :
-        #print(f"Probe size is {pixel_to_probe_ratio} times larger than probe size, oversampling conditions")
-        sampling_conditions = "Oversampling"
-        #print("Reccomended to use pixel size calculation")
-        reccomended = "Pixel size calculation"
-    else:
-        #print("Probe size and pixel size are perfectly matched")
-        sampling_conditions = "Perfect sampling"
+
 
     dose_rate_probe_angstroms = electrons_per_meter_square_probe*1e-20/dwell_time_seconds
     dose_rate_pixel_angstroms = electrons_per_meter_square_pixel*1e-20/dwell_time_seconds
@@ -339,7 +337,6 @@ def create_scalebar(ax,scalebar_size_pixels,metadata):
                            frameon=False,
                            fontproperties=fontprops)
     ax.add_artist(scalebar)
-
 
 def calculate_wavelength(energy):
     """energy in electronvolts -> return in picometers"""
@@ -412,87 +409,105 @@ def generate_colormaps(num_colors,num_bins=100,mode=None):
 
     return colormaps
 
-#TODO this needs to be split into sections by acquisition type and made into single layered dictionary
-#TODO set sensible decimal places
-
-def collect_metadata(acquisition_type,scan_width_px=None,use_precession=False,camera_frequency_hz=None,STEM_dwell_time=None,scan_rotation=0):
+def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=False,pixel_time=None,scan_rotation=0,edx_enabled=False,camera_pixels=512,num_frames=None):
     """Extracts acquisition conditions from the microscope and stores them in a dictionary
     Parameters:
-    scan_width_px: the number of pixels in the x axis
-    use_precession: True or False
-    camera_frequency_hz: The camera acquisition rate in FPS or Hz
+    acquisition_type: String "STEM" or" camera"/"4d-stem,
+    scan_width_px: number of pixels in x direction,
+    use_precession: True or False,
+    pixel_time: in seconds,
+    scan_rotation: degrees scan rotation applied,
+    edx_enabled: True or False,
+    camera_pixels: 128, 256, or 512,
+    num_frames: for multiframe EDX acquisitions
     """
 
     if scan_width_px is None:
         scan_width_px = get_number_of_nav_pixels()
 
     fov = grpc_client.scanning.get_field_width() #get the current scanning FOV
-    pixel_size_nm = (fov/scan_width_px)*1e9 #work out the pixel size in nanometers
+    pixel_size_nm = (fov/scan_width_px)*1e9 #pixel size in nanometers
     time_now = datetime.now()
     acquisition_time = time_now.strftime("%d_%m_%Y %H_%M")
     energy=grpc_client.gun.get_high_voltage()
     wavelength = calculate_wavelength(energy)
     pixel_size_inv_angstrom = (2*grpc_client.projection.get_max_camera_angle())*1e-3/(
-                wavelength*0.01)/512 #assuming 512 pixels #TODO change to camera pixels if in 4D mode
+                wavelength*0.01)/camera_pixels #assuming 512 pixels
 
-    if STEM_dwell_time == None: #only needed for acquisitions from the console that use the UI dwell time
-        STEM_dwell_time = window.scanning.pixel_time_spin.value() #in us
+    optical_mode = grpc_client.microscope.get_optical_mode()
+    optical_mode = optical_mode.name
+
+    max_angles = grpc_client.projection.get_max_detector_angles()
 
 
-    if camera_frequency_hz == None:
-        dwell_time_units = "us"
-        dwell_time = STEM_dwell_time
-        dwell_time_seconds = dwell_time*1e-6
-        max_angles = grpc_client.projection.get_max_detector_angles()
-        HAADF_inserted = grpc_client.stem_detector.get_is_inserted(grpc_client.stem_detector.DetectorType.HAADF)
+    if pixel_time == None: #only needed for acquisitions from the console that use the UI dwell time
+        pixel_time = window.scanning.pixel_time_spin.value() #in us
 
-    else:
-        camera_dwell_time = 1/camera_frequency_hz*1e3
-        dwell_time = camera_dwell_time
-
-    #TODO consider splitting it based on acquisition type?
+    #TODO reorder a bit
 
     microscope_info = { #creates a dictionary of microscope parameters
     "Acquisition date and time":acquisition_time,
+    "Optical mode":optical_mode,
     "High Tension (kV)":energy/1e3,
-    "Probe current (pA)" : grpc_client.illumination.get_current()*1e12,
-    "Convergence semiangle (mrad)" : grpc_client.illumination.get_convergence_half_angle()*1e3,
-    "Beam diameter (d50) (nm)" : grpc_client.illumination.get_beam_diameter()*1e9,
+    "Probe current (pA)" : np.round(grpc_client.illumination.get_current()*1e12,2),
+    "Convergence semiangle (mrad)" : np.round(grpc_client.illumination.get_convergence_half_angle()*1e3,2),
+    "Beam diameter (d50) (nm)" : np.round(grpc_client.illumination.get_beam_diameter()*1e9,2),
     "FOV (um)" : fov*1e6,
-    "Pixel size (nm)" : pixel_size_nm,
+    "Pixel size (nm)" : np.round(pixel_size_nm,2),
     "Scan width (px)":scan_width_px,
-    "Diffraction semiangle (mrad)" : grpc_client.projection.get_max_camera_angle()*1e3,
-    "Diffraction angle (mrad)" : grpc_client.projection.get_max_camera_angle()*1e3*2,
+    "Diffraction semiangle (mrad)" : np.round(grpc_client.projection.get_max_camera_angle()*1e3,2),
+    "Diffraction angle (mrad)" : np.round(grpc_client.projection.get_max_camera_angle()*1e3*2,2),
     "Camera pixel size (A^-1)":pixel_size_inv_angstrom,
     "Scan rotation (deg)":scan_rotation,
-    "Rotation angle between diffraction pattern and stage XY (deg)":np.rad2deg(grpc_client.projection.get_camera_to_stage_rotation()),
+    "Rotation angle between diffraction pattern and stage XY (deg)": np.round(np.rad2deg(grpc_client.projection.get_camera_to_stage_rotation()),2),
     }
 
     microscope_info["Acquisition type"]= acquisition_type
 
-    if acquisition_type == "STEM":
-        microscope_info["Dwell time (us)"] = dwell_time
+    if acquisition_type.lower() == "stem":
+        HAADF_inserted = grpc_client.stem_detector.get_is_inserted(grpc_client.stem_detector.DetectorType.HAADF)
+        microscope_info["Dwell time (us)"] = pixel_time*1e6 #seconds to microseconds
         microscope_info["BF collection semi-angle (mrad)"]= 1e3*max_angles["bf"]["end"] if not HAADF_inserted else 1e3*max_angles["haadf"]["start"]
         microscope_info["ADF inner collection semi-angle (mrad)"] = 1e3*max_angles["haadf"]["start"]
         microscope_info["ADF outer collection semi-angle (mrad)"] = 1e3*max_angles["haadf"]["end"]
 
-    if acquisition_type == "Camera":
-        microscope_info["Dwell time (ms)"] = (1/(camera_frequency_hz/1000))
+    if acquisition_type.lower() == "camera" or "4d-stem":
+        camera_roi_mode = grpc_client.scanning.get_camera_roi()
+        if camera_roi_mode["roi_mode"] == RM.Lines_128:
+            camera_pixels = (512,128)
+        if camera_roi_mode["roi_mode"] == RM.Lines_256:
+            camera_pixels = (512, 256)
+        elif camera_roi_mode["roi_mode"] == RM.Disabled:
+            camera_pixels = (512,512)
+
+        mrad_per_pixel = (microscope_info["Diffraction semiangle (mrad)"] * 2) / camera_pixels  # angle calibration per pixel
+        convergence_pixels = microscope_info["Convergence semiangle (mrad)"] / mrad_per_pixel  # convergence angle in pixels
+        pixel_radius = convergence_pixels  # semi-angle and radius
+        microscope_info["Dwell time (ms)"] = pixel_time*1e3 #seconds to milliseconds
+        microscope_info["Predicted diffraction spot diameter (px)"] = np.round(pixel_radius,2)
+        microscope_info["Camera acquisition size (px)"] = camera_pixels
+        microscope_info["Camera ROI mode"] = camera_roi_mode
+
+    if use_precession==True:
         microscope_info["Precession enabled"]=use_precession
         microscope_info["precession angle (mrad)"] = grpc_client.scanning.get_precession_angle()*1e3
+        microscope_info["precession angle (deg)"] = np.round(np.rad2deg(microscope_info["precession angle (mrad)"]),2)
         microscope_info["Precession Frequency (kHz)"] = grpc_client.scanning.get_precession_frequency()/1e3
 
-        microscope_info["Predicted diffraction spot size"] = spot_radius_in_px()
+    if edx_enabled == True:
+        edx_filter = grpc_client.xray.get_xray_filter_type()
+        microscope_info["EDX detector filter"] = edx_filter.name
+        microscope_info["Number of frames"] = num_frames
 
-    microscope_info["Alpha tilt (deg)"] = grpc_client.stage.get_alpha()/np.pi*180
-    microscope_info["Beta tilt (deg)"] = grpc_client.stage.get_beta()/np.pi*180
-    microscope_info["X (mm)"] = grpc_client.stage.get_x_y()["x"]*1e3
-    microscope_info["Y (mm)"] = grpc_client.stage.get_x_y()["y"]*1e3
-    microscope_info["Z (mm)"] = grpc_client.stage.get_z()*1e3
+    microscope_info["Alpha tilt (deg)"] = np.round(grpc_client.stage.get_alpha()/np.pi*180,2)
+    microscope_info["Beta tilt (deg)"] = np.round(grpc_client.stage.get_beta()/np.pi*180,2)
+    microscope_info["X (um)"] = np.round(grpc_client.stage.get_x_y()["x"]*1e6,2)
+    microscope_info["Y (um)"] = np.round(grpc_client.stage.get_x_y()["y"]*1e6,2)
+    microscope_info["Z (um)"] = np.round(grpc_client.stage.get_z()*1e6,2)
 
     return microscope_info
 
-#TODO something in quibbler messes with Numba
+"""#TODO something in quibbler messes with Numba
 def scrollable_plot(image_list,defocus_intervals):
     from pyquibbler import iquib, initialize_quibbler
     initialize_quibbler()
@@ -533,8 +548,7 @@ def scrollable_plot(image_list,defocus_intervals):
     xpos_ref = xposition.on_changed(update)
 
     plt.show(block=False)
-
-
+"""
 
 def acquire_precession_tilt_series(upper_limit_degrees):
     filepath = g.diropenbox("Select directory to save series","Save location")
@@ -543,6 +557,7 @@ def acquire_precession_tilt_series(upper_limit_degrees):
     grpc_client.scanning.set_scan_field_width(beam_size*2) # TODO check if this works
     image_list = []
     angle_list = []
+
     for i in range(0,(upper_limit_degrees*10)+1,1):
         print(f"Current precession angle {i} degrees")
         radians = np.deg2rad(i)
@@ -563,4 +578,5 @@ def acquire_precession_tilt_series(upper_limit_degrees):
         annotated_images.append(image)
 
     return image_list,angle_list
+
 
