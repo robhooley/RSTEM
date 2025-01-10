@@ -14,14 +14,11 @@ cache_client = controller.cache_client
 import scipy
 from expert_pi.RSTEM.utilities import get_microscope_parameters
 
-
-#from utilities import get_microscope_parameters,get_number_of_nav_pixels,calculate_dose,create_circular_mask
-
 def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose_fom_ui
     """Returns a dictionary contaning the calculated dose for the probe size and the pixel size in several units
     This requires only the metadata dictionary for a particular acquisition
     If the metadata is not provided, it will take the current state of the microscope and use that"""
-    #TODO optical mode check for beam diameter vs radius!!!!
+
     if metadata is None: #TODO change to metadata
         current_state = get_microscope_parameters()
         probe_current = current_state["Probe current (pA)"]*1e-12  # in amps
@@ -54,18 +51,14 @@ def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose
     """Calculate pixel size to probe size ratio"""
     pixel_to_probe_ratio = pixel_size/probe_size
     if pixel_to_probe_ratio > 1:
-        #print(f"Pixel size is {pixel_to_probe_ratio} times larger than probe size, undersampling conditions")
         sampling_conditions = "Undersampling"
-        #print("Reccomended to use probe size calculation")
         reccomended = "Probe size calculation"
     elif pixel_to_probe_ratio < 1 :
-        #print(f"Probe size is {pixel_to_probe_ratio} times larger than probe size, oversampling conditions")
         sampling_conditions = "Oversampling"
-        #print("Reccomended to use pixel size calculation")
         reccomended = "Pixel size calculation"
     else:
-        #print("Probe size and pixel size are perfectly matched")
         sampling_conditions = "Perfect sampling"
+        reccomended = "Either"
 
     dose_rate_probe_angstroms = electrons_per_meter_square_probe*1e-20/dwell_time_seconds
     dose_rate_pixel_angstroms = electrons_per_meter_square_pixel*1e-20/dwell_time_seconds
@@ -133,7 +126,7 @@ def beam_size_matched_acquisition(pixels=8,dwell_time_s=1e-3,output="sum",preces
 
     beam_size = grpc_client.illumination.get_beam_diameter() #in meters
 
-    matched_sampling_fov = beam_size*pixels*2 #calculates FOV for 1:1 beam:pixel sampling #TODO check GRPC wit Vojta
+    matched_sampling_fov = beam_size*pixels*2 #calculates FOV for 1:1 beam:pixel sampling #TODO check GRPC with Vojta
     grpc_client.scanning.set_field_width(matched_sampling_fov) #set fov in meters
     diffraction_data = acquire_datapoint(pixels,dwell_time_s,output=output,use_precession=precession) #acquires a 4D-dataset and sums to 1 diffraction pattern
     return diffraction_data

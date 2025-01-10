@@ -1,7 +1,7 @@
 import os
 import threading
 
-from stem_measurements import shift_measurements
+from expert_pi.measurements import shift_measurements
 #from PyQt5.QtWidgets import QApplication
 import pickle
 from time import sleep
@@ -31,21 +31,15 @@ window = main_window.MainWindow()
 controller = app.MainApp(window)
 cache_client = controller.cache_client
 
-from measurements import edx_processing
-from measurements.shift_measurements import get_offset_of_pictures
-#from expert_pi.controllers import main_controller
-#from expert_pi.view import main_window
+from expert_pi.measurements import edx_processing
 
-#import utilities
 
 #window = main_window.MainWindow()
 #controller = main_controller.MainController(window)
 
 from expert_pi.RSTEM.utilities import generate_colorlist,generate_colormaps
 
-host_F4 = ""
-host_P3 = "172.20.32.1" #TODO confirm
-host_P2 = ""
+
 host_global = '172.16.2.86'
 
 

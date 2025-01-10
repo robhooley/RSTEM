@@ -31,9 +31,6 @@ controller = app.MainApp(window)
 cache_client = controller.cache_client
 
 
-
-
-
 def scan_4D_basic(scan_width_px=128,camera_frequency_hz=4500,use_precession=False):
     """Parameters
     scan width: pixels
@@ -46,7 +43,6 @@ def scan_4D_basic(scan_width_px=128,camera_frequency_hz=4500,use_precession=Fals
     if sufficient_RAM == False:
         print("This dataset might not fit into RAM, trying anyway")
 
-    #metadata = get_microscope_parameters(scan_width_px,use_precession,camera_frequency_hz) #gets the microscope and acquisition metadata
     metadata = collect_metadata(acquisition_type="Camera",scan_width_px=scan_width_px,use_precession=use_precession,pixel_time=1/camera_frequency_hz,scan_rotation=0,edx_enabled=False,camera_pixels=512)
 
     if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(DT.HAADF) == True: #if either STEM detector is inserted
@@ -62,16 +58,13 @@ def scan_4D_basic(scan_width_px=128,camera_frequency_hz=4500,use_precession=Fals
     for i in tqdm(range(scan_width_px),desc="Retrieving data from cache",total=scan_width_px,unit="chunks"): #retrives data one scan row at a time to avoid crashes
         header, data = cache_client.get_item(scan_id, scan_width_px)  # cache retrieval in rows
         camera_size = data["cameraData"].shape[1],data["cameraData"].shape[2] #gets shape of diffraction patterns
-        for j in range(scan_width_px): #for each pixel in that row
-            image_data = data["cameraData"][j] #take the data for that pixel
-            image_data = np.asarray(image_data) #convers to numpy array
-            image_data = np.reshape(image_data,camera_size) #reshapes data to an individual image
-            image_list.append(image_data) #adds it to the list of images
+        image_data = data["cameraData"]  # take the data for that row
+        image_row = np.reshape(image_data, ( scan_width_px, camera_size[0], camera_size[1]))  # reshapes data to an individual image #TODO necessary?
+        image_list.append(image_row)  # adds it to the list of images
 
-    print("reshaping array") #reshaping the array to match the 4D STEM acquisition
+    print("Reshaping array") #reshaping the array to match the 4D STEM acquisition
     image_array = np.asarray(image_list) #converts the image list to an array
     del image_list #flush image list to clear out RAM
-    image_array = np.reshape(image_array, (scan_width_px, scan_width_px, camera_size[0], camera_size[1])) #reshapes the array to match the acquisition
     print("Array reshaped")
 
     return (image_array,metadata) #tuple with image data and metadata
@@ -172,16 +165,12 @@ def multi_VDF(data_array,radius=None):
 
     if type(data_array) is tuple: #checks for metadata dictionary
         image_array = data_array[0]
-        metadata = data_array[1]
-        if radius is None:
-            radius =  (metadata["Predicted diffraction spot diameter (px)"]/2)*1.3
-            print(f"The predicted spot radius is {radius} pixels")
+
     else:
         image_array = data_array
-        #metadata=None
-        #print("Metadata not present")
-        if radius is None:
-            radius = 20
+
+    if radius is None:
+        radius = 20
 
     dataset_shape = image_array.shape[0], image_array.shape[1]
     dp_shape = image_array[0][0].shape
@@ -356,13 +345,13 @@ def save_data(data_array,format=None,output_resolution=None):
         print("Pickling complete")
 
     if metadata is not None:
-        metadata_name = directory + f"\\4D-STEM_metadata{num_files_in_dir+1}.json"
+        metadata_name = directory + f"\\4D-STEM_{num_files_in_dir+1}_metadata.json"
         open_json = open(metadata_name,"w")
         json.dump(metadata,open_json,indent=6)
         open_json.close()
 
 #checked ok
-def import_tiff_series(scan_width=None):
+def import_tiff_series(scan_width=None,load_metadata=False):
     """Loads in a folder of TIFFs and creates a 4D-array for use with other functions"""
     directory = g.diropenbox("Select directory","Select Directory")
     if scan_width is None: #if scan width variable is empty, prompt user to enter it
@@ -374,8 +363,7 @@ def import_tiff_series(scan_width=None):
 
         scan_width=int(scan_width)
         scan_height = int(num_files/scan_width)
-    load_metadata = g.ynbox("Do you want to load the metadata .JSON file?","Do you want to load the metadata"
-                                                                           " .JSON file")
+
     if load_metadata == False:
         metadata=None
     if load_metadata == True:
