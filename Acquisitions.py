@@ -39,7 +39,6 @@ from expert_pi.RSTEM.utilities import get_microscope_parameters
 #manager.list_models()
 
 host_F2 = "172.23.158.142"
-host_F4 = "172.20.21.214"
 host_P3 = "172.20.32.1" #TODO confirm
 host_P2 = "172.25.15.0"
 host_global = '172.16.2.86'
@@ -59,7 +58,7 @@ def normalize_to_8bit(image):
     return normalized
 
 #refactored to 0.1.0
-def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=None,pixel_time_us=None):
+def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pixel_time=5e-6):
     """Parameters
     extent_nm: Range the focal series should cover split equally around the current focus value
     steps: how many total steps the focal series should cover
@@ -73,13 +72,6 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=None,pi
         print("Adding a step so series passes at zero")
     else:
         pass
-
-    if pixel_time_us is None:
-        pixel_time = window.scanning.pixel_time_spin.value()*1e-6
-    else:
-        pixel_time = pixel_time_us*1e-6
-    if num_pixels is None:
-        num_pixels=1024
 
     current_defocus = grpc_client.illumination.get_condenser_defocus(CFT.C3)
     lower_defocus = current_defocus-(extent_nm*1e-9/2)
@@ -141,7 +133,7 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=None,pi
     return image_series,defocus_offsets
 
 #refactored to 0.1.0
-def acquire_FOV_series(scale,steps=11,num_pixels=None,pixel_time_us=None):
+def acquire_FOV_series(scale,steps=11,num_pixels=1024,pixel_time=5e-6):
     """Parameters
     extent_nm: Range the focal series should cover split equally around the current focus value
     steps: how many total steps the focal series should cover
@@ -156,12 +148,6 @@ def acquire_FOV_series(scale,steps=11,num_pixels=None,pixel_time_us=None):
     else:
         pass
 
-    if pixel_time_us is None:
-        pixel_time = window.scanning.pixel_time_spin.value()*1e-6
-    else:
-        pixel_time = pixel_time_us*1e-6
-    if num_pixels is None:
-        num_pixels=1024
 
     current_fov = grpc_client.scanning.get_field_width()
     lower_fov = current_fov/scale
@@ -207,7 +193,7 @@ def acquire_FOV_series(scale,steps=11,num_pixels=None,pixel_time_us=None):
     return image_series,fovs
 
 #refactored 0.1.0
-def acquire_STEM(fov_um=None,pixel_time_us=None,num_pixels=1024,scan_rotation_deg=None):
+def acquire_STEM(fov_um=None,pixel_time=5e-6,num_pixels=1024,scan_rotation_deg=None):
     """Acquires a single STEM image from the inserted detectors
     returns a tuple with the images and the metadata in a dictionary
     Parameters
@@ -218,10 +204,6 @@ def acquire_STEM(fov_um=None,pixel_time_us=None,num_pixels=1024,scan_rotation_de
 
     if scan_rotation_deg is not None:
         grpc_client.scanning.set_rotation(np.deg2rad(scan_rotation_deg))
-    if pixel_time_us is None:
-        pixel_time = window.scanning.pixel_time_spin.value()*1e-6  # gets current pixel time from UI and convert to seconds
-    else:
-        pixel_time = pixel_time_us*1e-6
     if fov_um is not None:
         grpc_client.scanning.set_field_width(fov_um*1e-6) #in microns
 

@@ -29,8 +29,6 @@ window = main_window.MainWindow()
 controller = app.MainApp(window)
 cache_client = controller.cache_client
 
-#from bda_functions import scan_4D_tool
-
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None):
     if mask_center_coordinates is None:  # use the middle of the image
         mask_center_coordinates = (int(image_width/2), int(image_height/2))
@@ -319,9 +317,7 @@ def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose
     "Pixel dose e-m-2": electrons_per_meter_square_pixel,
     "Probe dose e-m-2":electrons_per_meter_square_probe,
     "Pixel dose rate e-A-2s-1":dose_rate_pixel_angstroms,
-    "Probe dose rate-A-2s-1":dose_rate_probe_angstroms,
-    "Sampling conditions":sampling_conditions,
-                   "Reccomended calculation":reccomended}
+    "Probe dose rate-A-2s-1":dose_rate_probe_angstroms}
 
     return dose_values #returns dose values and the unit
 
@@ -486,7 +482,7 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
         microscope_info["Dwell time (ms)"] = pixel_time*1e3 #seconds to milliseconds
         microscope_info["Predicted diffraction spot diameter (px)"] = np.round(pixel_radius,2)
         microscope_info["Camera acquisition size (px)"] = camera_pixels
-        microscope_info["Camera ROI mode"] = camera_roi_mode
+        microscope_info["Camera ROI mode"] = camera_roi_mode["roi_mode"]
 
     if use_precession==True:
         microscope_info["Precession enabled"]=use_precession
@@ -507,49 +503,6 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
 
     return microscope_info
 
-"""#TODO something in quibbler messes with Numba
-def scrollable_plot(image_list,defocus_intervals):
-    from pyquibbler import iquib, initialize_quibbler
-    initialize_quibbler()
-    def set_axes():
-        shape = image_list[0].shape
-        ax.set_aspect(1) #sets square aspect ratio for the plot
-        ax.set_xlim(0, shape[0]) #axes limited to size of dataset with no excess
-        ax.set_ylim(0, shape[1]) #axes limited to size of dataset with no excess
-
-    # The function to be called anytime a slider's value changes
-    def update(val):
-        print("Updating")
-        ax.clear() #clears the old data from the navigation plot
-        set_axes() #rebuilds the axes
-        ax.imshow(image_list[xposition.val],cmap="gray") #adds the new diffraction pattern
-        if defocus_intervals:
-            ax.set_title(f"Image {xposition.val}, defocus {defocus_intervals[xposition.val]} nm")
-        else:
-            ax.set_title("Image",xposition.val)
-        #ax.set_title(("Image", int(xposition.val))) #Adds title to diffraction plot
-        fig.canvas.draw_idle() #stops the interactive plotting
-
-    # Define initial plotting space
-    fig, ax = plt.subplots(1, 1, figsize=(10, 10))  # builds a figure with 2 subplots
-    set_axes()  # sets the axis scales
-    ax.imshow(image_list[int(len(image_list)/2)],cmap="gray")
-    ax.set_title(f"Image {int(len(image_list)/2)}, defocus {defocus_intervals[0]} nm")  # adds title to navigation image
-    # adjust the main plot to make room for the sliders
-    fig.subplots_adjust(left=0.25, bottom=0.25)
-
-    # Make a horizontal slider to control the position of the pattern in the x axis.
-    xpos_allowed = np.arange(start=0, stop=len(image_list),
-                             step=1)  # slider range is capped to integer number of pixels
-    xpos = fig.add_axes([0.1, 0.1, 0.8, 0.03])  # size of slider in plot
-    xposition = Slider(ax=xpos, label='Image', valmin=0, valstep=xpos_allowed, valmax=len(image_list),
-                       valinit=int(len(image_list)/2))  # creates the slider
-
-    xpos_ref = xposition.on_changed(update)
-
-    plt.show(block=False)
-"""
-
 def acquire_precession_tilt_series(upper_limit_degrees):
     filepath = g.diropenbox("Select directory to save series","Save location")
     beam_size = grpc_client.illumination.get_beam_diameter()
@@ -562,7 +515,7 @@ def acquire_precession_tilt_series(upper_limit_degrees):
         print(f"Current precession angle {i} degrees")
         radians = np.deg2rad(i)
         grpc_client.scanning.set_precession_angle(radians)
-        images = scan_4D_tool(8,10,True)
+        images = scan_4D_basic(8,1000,True)
         single_pattern = np.sum(np.asarray(images,dtype=np.uint64))
         image_list.append(single_pattern)
         angle_list.append(i)
