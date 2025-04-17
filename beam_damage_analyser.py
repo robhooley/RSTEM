@@ -246,7 +246,7 @@ def full_series_spot_tracking(dataset,threshold=0): #TODO deprecate single funct
 
         return spot_count,full_fits_per_frame,spot_positions,doses,image_series
 
-def calculate_garman_limit_spot_number(num_spots,doses):
+def calculate_garman_limit_spot_number(dataset,num_spots,doses):
     approx_garman = int(max(num_spots)/2)
     print("Approx Garman limit",approx_garman)
 
@@ -278,7 +278,7 @@ def calculate_garman_limit_spot_number(num_spots,doses):
     return garman_dose
 
 
-def calculate_spot_lifetime(full_fitting,doses):
+def calculate_spot_lifetime(dataset,full_fitting,doses):
 
     energy = 100e3 #TODO get from metadata
     max_cam_angle_rads =0.14 #TODO get from metadata

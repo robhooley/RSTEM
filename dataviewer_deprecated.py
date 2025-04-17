@@ -74,7 +74,8 @@ def create_visualizer(data, user_function):
 
         # Ensure the image is in RGB format
         resized_main = ensure_rgb(resized_main)
-
+        resized_main = resized_main.rotate(90, Image.NEAREST, expand = 1)
+        #resized_main = cv2.rotate(resized_main,cv2.ROTATE_90_CLOCKWISE)
         # Draw markers on the resized image
         draw = ImageDraw.Draw(resized_main)
         scale_factor_x = resized_main.width / main_image_pil.width
@@ -91,7 +92,7 @@ def create_visualizer(data, user_function):
 
         # Convert to PhotoImage for display
         main_image_tk = ImageTk.PhotoImage(resized_main)
-        main_image_tk = cv2.rotate(main_image_tk,cv2.ROTATE_90_CLOCKWISE)
+
         image_refs["main_image"] = main_image_tk
 
         # Dynamically resize the canvas to match the image dimensions

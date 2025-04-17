@@ -38,7 +38,7 @@ def ask_float(*args, **kwargs):
         askfloat_thread.join()
     return result
 
-def create_visualizer():
+def visualiser():
     """
     Creates a Tkinter application for visualizing a 4D numpy array.
     """
@@ -139,8 +139,8 @@ def create_visualizer():
         progress_label = tk.Label(progress_frame, text="0 / 0")
         progress_label.pack(side=tk.LEFT, padx=5)
 
-        print(scan_width)
-        print(folder_path)
+        #print(scan_width)
+        #print(folder_path)
         folder = os.listdir(folder_path)
 
         image_list = []
@@ -311,11 +311,11 @@ def create_visualizer():
         y_offset = 0
 
         # Debugging information
-        print(f"Canvas Size: {canvas_width}x{canvas_height}")
-        print(f"Image Size: {image_width}x{image_height}")
-        print(f"Drawn Size: {drawn_width}x{drawn_height}")
-        print(f"Offsets: x={x_offset}, y={y_offset}")
-        print(f"Click Position: x={event.x}, y={event.y}")
+        #print(f"Canvas Size: {canvas_width}x{canvas_height}")
+        #print(f"Image Size: {image_width}x{image_height}")
+        #print(f"Drawn Size: {drawn_width}x{drawn_height}")
+        #print(f"Offsets: x={x_offset}, y={y_offset}")
+        #print(f"Click Position: x={event.x}, y={event.y}")
 
         # Scaling factors
         scale_x = image_width / drawn_width
@@ -407,6 +407,7 @@ def create_visualizer():
         # Call the user function with radius and center
         main_image = function(data_array, radius_value.get(), tuple(circle_center))
         main_image_pil = Image.fromarray(normalize_to_8bit(main_image))
+        main_image_pil = main_image_pil.rotate(270, Image.NEAREST, expand = 1)
         update_main_image()
 
     # UI Layout
@@ -420,7 +421,7 @@ def create_visualizer():
     top_frame.pack(side=tk.TOP, fill=tk.X)
 
     # Load Data Button
-    load_button = tk.Button(top_frame, text="Load Data", command=load_data)
+    load_button = tk.Button(top_frame, text="Load Numpy Array", command=load_data)
     load_button.pack(side=tk.LEFT, padx=5, pady=5)
 
     #Save images button
@@ -428,12 +429,12 @@ def create_visualizer():
     save_images.pack(side=tk.LEFT, padx=5, pady=5)
 
     #Load Series button
-    load_series_b = tk.Button(top_frame, text="Load image series", command=load_series)
+    load_series_b = tk.Button(top_frame, text="Load .tiff series", command=load_series)
     load_series_b.pack(side=tk.LEFT, padx=5, pady=5)
 
 
     # Radius Label and Entry
-    radius_label = tk.Label(top_frame, text="Radius:")
+    radius_label = tk.Label(top_frame, text="Detector Radius (px):")
     radius_label.pack(side=tk.LEFT, padx=5, pady=5)
 
     radius_entry = tk.Entry(top_frame, textvariable=radius_value, width=5)
@@ -445,11 +446,6 @@ def create_visualizer():
                                      state="readonly")
     function_dropdown.pack(side=tk.LEFT, padx=5, pady=5)
     function_dropdown.bind("<<ComboboxSelected>>", update_function)
-
-    # Regenerate Main Image Button
-    #trigger_button = tk.Button(top_frame, text="Regenerate Main Image",
-    #                           command=lambda: update_main_image(trigger_user_function=True))
-    #trigger_button.pack(side=tk.LEFT, padx=5, pady=5)
 
     # Main Frame for Canvases
     main_frame = tk.Frame(root)
@@ -474,9 +470,4 @@ def create_visualizer():
     # Start the Tkinter main loop
     root.mainloop()
 
-
-# Run the visualizer
-if __name__ == "__main__":
-    create_visualizer()
-
-#TODO
+visualiser()
