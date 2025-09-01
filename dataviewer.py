@@ -1,5 +1,8 @@
 import tkinter as tk
 from tkinter import filedialog, simpledialog, messagebox, ttk
+from natsort import natsorted
+import rsciio.blockfile as rs_blo
+import rsciio.hspy      as rs_hspy
 import numpy as np
 from PIL import Image, ImageTk, ImageDraw
 import cv2 as cv2
@@ -8,35 +11,109 @@ from expert_pi.RSTEM.analysis_functions import *
 from tqdm import tqdm
 import fnmatch
 import tifffile as tiff
-import natsort
-import multiprocessing as mp
-
+#import multiprocessing as mp
+import threading,queue
 
 # Global variable to control mouse motion functionality
 mouse_motion_enabled = True  # Initially enabled
 
 
-def askfloat_helper(*args, **kwargs):
-    root = tk.Tk()
-    root.withdraw()
-    result_queue = kwargs.pop('result_queue')
-    kwargs['parent'] = root
-    result_queue.put(
-        simpledialog.askfloat(
-            prompt="Please enter known scan width in pixels",
-            title="Enter Scan Width")) #, *args, **kwargs))
-    root.destroy()
+def ask_scan_width(parent, guessed_width: int, num_files: int) -> int | None:
+    """Modal integer prompt with initial value and proper parenting."""
+    return simpledialog.askinteger(
+        title="Enter Scan Width",
+        prompt=f"Detected {num_files} images.\nGuessed width: {guessed_width}\nEnter scan width (X):",
+        initialvalue=int(guessed_width),
+        minvalue=1,
+        maxvalue=num_files,
+        parent=parent
+    )
+def ask_pixel_size_nm(parent, guessed_nm: float | None = None) -> float | None:
+    return simpledialog.askfloat(
+        title="Pixel size (nm/pixel)",
+        prompt="Enter pixel size in nanometers (nm/pixel):",
+        initialvalue=None if guessed_nm is None else float(guessed_nm),
+        minvalue=0.0,
+        parent=parent
+    )
 
+def _normalize_navigator(img2d: np.ndarray) -> np.ndarray:
+    a = np.asarray(img2d, dtype=np.float32)
+    mask = np.isfinite(a)
+    vals = a[mask]
+    if vals.size == 0:
+        return np.zeros_like(a, dtype=np.uint8)
+    lo, hi = np.percentile(vals, (1, 99))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo, hi = float(vals.min()), float(vals.max())
+        if hi <= lo:
+            return np.zeros_like(a, dtype=np.uint8)
+    a = np.clip(a, lo, hi)
+    den = (a.max() - a.min()) or 1.0
+    return ((a - a.min()) / den * 255).astype(np.uint8)
 
-def ask_float(*args, **kwargs):
-    result_queue = mp.Queue()
-    kwargs['result_queue'] = result_queue
-    askfloat_thread = mp.Process(target=askfloat_helper, args=args, kwargs=kwargs)
-    askfloat_thread.start()
-    result = result_queue.get()
-    if askfloat_thread.is_alive():
-        askfloat_thread.join()
-    return result
+def downsample_diffraction(array4d, rescale_to=128, mode='sum'):
+    if array4d.ndim != 4:
+        raise ValueError("Expected a 4-D array (scan_y, scan_x, dp_y, dp_x)")
+    ny_s, nx_s, ny_dp, nx_dp = array4d.shape
+    if ny_dp % rescale_to or nx_dp % rescale_to:
+        raise ValueError(f"DP size must be a multiple of {rescale_to}; got ({ny_dp}, {nx_dp}).")
+    fy, fx = ny_dp // rescale_to, nx_dp // rescale_to
+    if fy != fx:
+        raise ValueError("Diffraction pattern must be square.")
+    a = np.ascontiguousarray(array4d)
+    v = a.reshape(ny_s, nx_s, rescale_to, fy, rescale_to, fx)
+    if mode == 'sum':
+        return v.sum(axis=(-1, -3))
+    elif mode == 'mean':
+        return v.mean(axis=(-1, -3))
+    raise ValueError("mode must be 'sum' or 'mean'")
+
+def array2blo(data: np.ndarray, px_nm: float, save_path: str,
+              intensity_scaling="crop", bin_data_to_128=True):
+    """Save (Ny, Nx, Dy, Dx) array to .blo via rsciio with minimal metadata."""
+    from rsciio.blockfile import file_writer
+
+    # Optional binning to 128×128 DPs
+    if bin_data_to_128 and (data.shape[2] != 128 or data.shape[3] != 128):
+        data = downsample_diffraction(data, rescale_to=128, mode="sum")
+
+    if data.ndim != 4:
+        raise ValueError("`data` must be 4-D (Ny, Nx, Dy, Dx)")
+    Ny, Nx, Dy, Dx = map(int, data.shape)
+
+    # Navigator image (for preview in .blo viewers)
+    navigator = _normalize_navigator(data.sum(axis=(2, 3)))
+
+    # Minimal metadata
+    meta = {"Pixel size (nm)": float(px_nm)}
+    axes = [
+        {"name": "scan_y", "units": "nm", "index_in_array": 0,
+         "size": Ny, "offset": 0.0, "scale": px_nm, "navigate": True},
+        {"name": "scan_x", "units": "nm", "index_in_array": 1,
+         "size": Nx, "offset": 0.0, "scale": px_nm, "navigate": True},
+        {"name": "qy", "units": "px", "index_in_array": 2,
+         "size": Dy, "offset": 0.0, "scale": 1.0, "navigate": False},
+        {"name": "qx", "units": "px", "index_in_array": 3,
+         "size": Dx, "offset": 0.0, "scale": 1.0, "navigate": False},
+    ]
+
+    signal = {
+        "data": data,
+        "axes": axes,
+        "metadata": {"acquisition": meta},
+        "original_metadata": meta,
+        "attributes": {"_lazy": False},
+    }
+
+    file_writer(
+        save_path,
+        signal,
+        intensity_scaling=intensity_scaling,
+        navigator=navigator,
+        endianess="<",
+        show_progressbar=True,
+    )
 
 def visualiser():
     """
@@ -76,7 +153,7 @@ def visualiser():
             return
 
         # Ask user to select a directory
-        save_dir = filedialog.askdirectory()
+        save_dir = filedialog.askdirectory(parent=root)
         if not save_dir:
             print("Save canceled.")
             return
@@ -96,8 +173,8 @@ def visualiser():
 
         # Save individual sub-images
         for i, (x, y) in enumerate(clicked_positions, start=1):
-            if 0 <= x < data_array.shape[0] and 0 <= y < data_array.shape[1]:
-                sub_image = data_array[x, y]
+            if 0 <= y < data_array.shape[0] and 0 <= x < data_array.shape[1]:
+                sub_image = data_array[y, x]
                 sub_image_path = f"{save_dir}/clicked_position_{i}_sub_image.tiff"
                 Image.fromarray(sub_image).save(sub_image_path)
 
@@ -110,61 +187,132 @@ def visualiser():
         print(f"Images and positions saved to {save_dir}")
         messagebox.showinfo("Save Complete", f"Images and positions saved to {save_dir}")
 
-    def load_series():
-        nonlocal data_array
-        folder_path = filedialog.askdirectory(mustexist=True)
 
-        image_files = sorted([
-            f for f in os.listdir(folder_path)
-            if os.path.isfile(os.path.join(folder_path, f)) and f.lower().endswith(
-                ('.tiff', '.tif'))
-        ])
-        if not image_files:
-            print("No image files found in the selected folder.")
+    def load_series():
+        """Threaded TIFF series loader with progress bar + Cancel."""
+        nonlocal data_array, circle_center
+
+        folder_path = filedialog.askdirectory(mustexist=True, parent=root)
+        if not folder_path:
             return
 
-        num_files = len(image_files)  # counts how many .tiff files are in the directory
-        guessed_scan_width = int(np.sqrt(num_files))  # assumes it is a square acquisition
+        files = [f for f in os.listdir(folder_path)
+                 if os.path.isfile(os.path.join(folder_path, f))
+                 and f.lower().endswith(('.tif', '.tiff'))]
+        if not files:
+            messagebox.showwarning("Load TIFF Series", "No .tif/.tiff files found.", parent=root)
+            return
 
-        scan_width = int(ask_float(guessed_scan_width,num_files))
+        try:
+            files = natsorted(files)
+        except Exception:
+            files = sorted(files)
+        N = len(files)
 
-        # Create a progress bar and label in the main window
+        guessed_scan_width = int(np.sqrt(N))
+        scan_width = ask_scan_width(root, guessed_scan_width, N)
+        if not scan_width:
+            return
+        if N % scan_width != 0:
+            messagebox.showwarning("Load TIFF Series",
+                                   f"{N} not divisible by {scan_width}; last row will be padded.",
+                                   parent=root)
+        scan_height = (N + (scan_width - 1)) // scan_width  # ceil
+
+        # Progress UI
         progress_frame = tk.Frame(root)
         progress_frame.pack(side=tk.TOP, pady=10)
-
-        progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=300, mode="determinate")
+        progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=320,
+                                       mode="determinate", maximum=N)
         progress_bar.pack(side=tk.LEFT, padx=10)
-        progress_bar["maximum"] = len(image_files)
-
-        progress_label = tk.Label(progress_frame, text="0 / 0")
+        progress_label = tk.Label(progress_frame, text=f"0 / {N} (0.0%)")
         progress_label.pack(side=tk.LEFT, padx=5)
+        cancel_flag = {'stop': False}
 
-        #print(scan_width)
-        #print(folder_path)
-        folder = os.listdir(folder_path)
+        def _cancel():
+            cancel_flag['stop'] = True
 
-        image_list = []
+        cancel_btn = tk.Button(progress_frame, text="Cancel", command=_cancel)
+        cancel_btn.pack(side=tk.LEFT, padx=10)
 
+        # Thread-safe queue for progress and result
+        q = queue.Queue()
 
-        #for file in tqdm(folder):  # iterates through folder with a progress bar
-        for idx, image_file in enumerate(image_files, start=1):
-            image_path = os.path.join(folder_path, image_file)
-            image = tiff.imread(image_path)#Image.open(image_path)#cv2.imread(image_path, cv2.IMREAD_UNCHANGED)  # loads them with openCV
-            image_list.append(image)  # adds them to a list of all images
-            # Update progress bar
-            progress_bar["value"] = idx
-            progress_label.config(text=f"Image series import progress: {idx} / {len(image_files)} ({(idx / len(image_files)) * 100:.1f}%)")
-            root.update()  # Keep the UI responsive
+        def _read_one(p):
+            try:
+                import tifffile as _tiff
+                return _tiff.imread(p)
+            except Exception:
+                from PIL import Image
+                with Image.open(p) as im:
+                    return np.array(im)
 
+        def worker():
+            try:
+                first = _read_one(os.path.join(folder_path, files[0]))
+                if first.ndim != 2:
+                    q.put(('error', f"Expected 2D frames, got {first.shape}"))
+                    return
+                H, W = first.shape
+                dtype = first.dtype
+                stack = np.empty((N, H, W), dtype=dtype)
+                stack[0] = first
+                q.put(('progress', 1, N))
 
-        array = np.asarray(image_list)  # converts the list to an array
-        cam_pixels_x, cam_pixels_y = image_list[0].shape
-        data_array = np.reshape(array, (scan_width, int((num_files/scan_width)), cam_pixels_x, cam_pixels_y))
-        progress_frame.destroy()
-        messagebox.showinfo("Import Complete", f"Successfully imported {len(image_files)} images.")
-        update_function()
+                for i, name in enumerate(files[1:], start=2):
+                    if cancel_flag['stop']:
+                        q.put(('cancelled', None, None))
+                        return
+                    arr = _read_one(os.path.join(folder_path, name))
+                    if arr.shape != (H, W):
+                        q.put(('error', f"Frame {name} shape {arr.shape} != {(H, W)}"))
+                        return
+                    stack[i - 1] = arr
+                    q.put(('progress', i, N))
 
+                # Pad if needed, then reshape to (Y, X, H, W)
+                if N % scan_width != 0:
+                    missing = scan_width - (N % scan_width)
+                    pad = np.zeros((missing, H, W), dtype=dtype)
+                    stack = np.concatenate([stack, pad], axis=0)
+                data = stack.reshape(-1, scan_width, H, W)  # rows auto (ceil)
+                q.put(('done', data, (H, W)))
+            except Exception as e:
+                q.put(('error', str(e)))
 
+        def pump():
+            try:
+                while True:
+                    kind, a, b = q.get_nowait()
+                    if kind == 'progress':
+                        i, total = a, b
+                        progress_bar['value'] = i
+                        progress_label.config(text=f"{i} / {total} ({(i / total) * 100:.1f}%)")
+                    elif kind == 'done':
+                        nonlocal data_array, circle_center
+                        data_array = a
+                        H, W = b
+                        circle_center[0], circle_center[1] = W // 2, H // 2
+                        update_pointer_image(data_array.shape[1] // 2, data_array.shape[0] // 2)
+                        progress_frame.destroy()
+                        messagebox.showinfo("Import Complete",
+                                            f"Imported {N} images → navigator {data_array.shape[:2]}", parent=root)
+                        update_function()
+                        return
+                    elif kind == 'cancelled':
+                        progress_frame.destroy()
+                        messagebox.showinfo("Load TIFF Series", "Cancelled.", parent=root)
+                        return
+                    elif kind == 'error':
+                        progress_frame.destroy()
+                        messagebox.showerror("Load TIFF Series", a, parent=root)
+                        return
+            except queue.Empty:
+                pass
+            root.after(33, pump)  # ~30 Hz UI updates
+
+        threading.Thread(target=worker, daemon=True).start()
+        pump()
 
     def resize_image(image, max_dimension):
         """
@@ -193,16 +341,32 @@ def visualiser():
             image = image.convert("RGB")
         return image
 
-    def normalize_to_8bit(image):
-        """
-        Normalizes a numpy array to 8-bit for display purposes with percentile-based clipping.
-        """
-        lower_percentile, upper_percentile = np.percentile(image, [1, 99])  # Get 1st and 99th percentiles
-        clipped_image = np.clip(image, lower_percentile, upper_percentile)  # Clip to the range
-        image_min = clipped_image.min()
-        image_max = clipped_image.max()
-        normalized = (255 * (clipped_image - image_min) / (image_max - image_min)).astype(np.uint8)
-        return normalized
+    def normalize_to_8bit(img, clip=(0.5, 99.5), ignore_zeros=True, use_log=False, apply_clahe=False):
+        a = np.asarray(img).astype(np.float32)
+        mask = np.isfinite(a)
+        if ignore_zeros: mask &= (a != 0)
+        if not mask.any(): return np.zeros(a.shape, np.uint8)
+        vals = a[mask]
+        lo, hi = np.percentile(vals, clip)
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo: lo, hi = vals.min(), vals.max()
+        if hi <= lo: v = lo; eps = max(abs(v) * 1e-3, 1e-6); lo, hi = v - eps, v + eps
+        a = np.clip(a, lo, hi)
+        if use_log:
+            if lo <= 0: a += -(lo) + 1e-6
+            a = np.log1p(a)
+        denom = (a.max() - a.min()) or 1.0
+        out = ((a - a.min()) / denom * 255).astype(np.uint8)
+        if apply_clahe:
+            try:
+                import cv2;
+                out = cv2.createCLAHE(2.0, (8, 8)).apply(out)
+            except:  # fallback hist eq
+                hist, _ = np.histogram(out, 256, (0, 255));
+                cdf = hist.cumsum();
+                cdf = (cdf - cdf[cdf > 0].min()) * 255 / (cdf.max() - cdf[cdf > 0].min());
+                lut = np.clip(cdf, 0, 255).astype(np.uint8);
+                out = lut[out]
+        return out
 
     def update_main_image(trigger_user_function=False):
         """
@@ -257,8 +421,8 @@ def visualiser():
         if data_array is None or main_image_pil is None:
             return
 
-        if 0 <= x < data_array.shape[0] and 0 <= y < data_array.shape[1]:
-            sub_image = data_array[x, y]
+        if 0 <= y < data_array.shape[0] and 0 <= x < data_array.shape[1]:
+            sub_image = data_array[y, x]
             normalized = normalize_to_8bit(sub_image)
             pointer_image_pil = Image.fromarray(normalized).convert("RGB")
 
@@ -280,6 +444,8 @@ def visualiser():
                 outline=(255, 0, 0, 128),  # Semi-transparent red
                 width=3
             )
+            draw.line((upscaled_center_x - 3, upscaled_center_y, upscaled_center_x + 3, upscaled_center_y), fill="red", width=1)
+            draw.line((upscaled_center_x, upscaled_center_y - 3, upscaled_center_x, upscaled_center_y + 3), fill="red", width=1)
 
             pointer_image_tk = ImageTk.PhotoImage(resized_pointer)
             image_refs["current_sub_image"] = pointer_image_tk
@@ -369,25 +535,313 @@ def visualiser():
             #print("No data array loaded.")
             return
 
+        #update_pointer_image(x, y)
         # Map the mouse position to the data array
-        x = int(event.x * data_array.shape[0] / main_canvas.winfo_width())
-        y = int(event.y * data_array.shape[1] / main_canvas.winfo_height())
-
+        y = int(event.y * data_array.shape[0] / main_canvas.winfo_height())
+        x = int(event.x * data_array.shape[1] / main_canvas.winfo_width())
         # Ensure indices are within bounds
-        x = max(0, min(data_array.shape[0] - 1, x))
-        y = max(0, min(data_array.shape[1] - 1, y))
+        y = max(0, min(data_array.shape[0] - 1, y))
+        x = max(0, min(data_array.shape[1] - 1, x))
 
         update_pointer_image(x, y)
+
+    def load_npy_with_progress(path):
+        # This creates a memmap immediately
+        mm = np.load(path, mmap_mode='r')
+        out = np.empty_like(mm)
+        total = mm.size
+        chunk = max(1, total // 200)  # ~200 steps
+
+        # UI
+        frame = tk.Frame(root);
+        frame.pack(side=tk.TOP, pady=10)
+        bar = ttk.Progressbar(frame, orient="horizontal", length=300, mode="determinate");
+        bar.pack(side=tk.LEFT, padx=10)
+        lbl = tk.Label(frame, text="0%");
+        lbl.pack(side=tk.LEFT, padx=5)
+
+        done = 0
+        flat_src = mm.ravel()
+        flat_dst = out.ravel()
+        for start in range(0, total, chunk):
+            end = min(total, start + chunk)
+            flat_dst[start:end] = flat_src[start:end]
+            done = end
+            bar["value"] = (done / total) * 100
+            lbl.config(text=f"{bar['value']:.1f}%")
+            root.update_idletasks()
+
+        frame.destroy()
+        return out
+
+        """    def load_data():
+        """
+        #Loads a .npy file as a 4D data array.
+        """
+        nonlocal data_array
+        file_path = filedialog.askopenfilename(parent=root,filetypes=[("NumPy Array", "*.npy")])
+        if file_path:
+            #data_array = np.load(file_path)
+            #np.flip(np.flip(data_array, axis=0), axis=1)
+            #update_function()
+            data_array = load_npy_with_progress(file_path)#np.load(file_path)
+            H, W = data_array.shape[2], data_array.shape[3]
+            circle_center[0] = W // 2
+            circle_center[1] = H // 2
+            update_pointer_image(data_array.shape[1] // 2, data_array.shape[0] // 2)
+            update_function()"""
+
+    # UPDATED: generic threaded, cancellable progress dialog
+    def _load_with_progress(start_fn, title: str):
+        """
+        start_fn(cancel_flag: dict, q: queue.Queue) should push:
+            ('status', 'message')    optional, update status label
+            ('done', ndarray)        on success
+            ('error', 'message')     on failure
+        """
+        progress_win = tk.Toplevel(root)
+        progress_win.title(title)
+        progress_win.transient(root)
+        progress_win.grab_set()  # modal dialog
+
+        tk.Label(progress_win, text=title).pack(padx=12, pady=(12, 4))
+
+        bar = ttk.Progressbar(progress_win, orient="horizontal", length=340, mode="indeterminate")
+        bar.pack(padx=12, pady=8)
+        bar.start(10)  # ms per step
+
+        status_lbl = tk.Label(progress_win, text="Starting…")
+        status_lbl.pack(padx=12, pady=(0, 10))
+
+        btn_frame = tk.Frame(progress_win);
+        btn_frame.pack(pady=(0, 12))
+        cancel_flag = {'stop': False}
+
+        def _cancel():
+            cancel_flag['stop'] = True
+            status_lbl.config(text="Cancelling…")
+
+        tk.Button(btn_frame, text="Cancel", command=_cancel).pack()
+
+        q = queue.Queue()
+
+        def worker():
+            try:
+                start_fn(cancel_flag, q)
+            except Exception as e:
+                q.put(('error', f"{type(e).__name__}: {e}"))
+
+        def pump():
+            try:
+                while True:
+                    kind, payload = q.get_nowait()
+                    if kind == 'status':
+                        status_lbl.config(text=str(payload))
+                    elif kind == 'done':
+                        # If user cancelled while load was in-flight, drop the result.
+                        if cancel_flag['stop']:
+                            bar.stop();
+                            progress_win.grab_release();
+                            progress_win.destroy()
+                            messagebox.showinfo(title, "Cancelled.", parent=root)
+                            return
+                        arr = payload
+                        arr4d = _coerce_to_4d(arr, root, ask_scan_width)
+                        if arr4d is None:
+                            bar.stop();
+                            progress_win.grab_release();
+                            progress_win.destroy()
+                            return
+                        nonlocal data_array, circle_center
+                        data_array = arr4d
+                        H, W = data_array.shape[2], data_array.shape[3]
+                        circle_center[:] = [W // 2, H // 2]
+                        update_pointer_image(data_array.shape[1] // 2, data_array.shape[0] // 2)
+                        bar.stop();
+                        progress_win.grab_release();
+                        progress_win.destroy()
+                        messagebox.showinfo(title, f"Loaded → navigator {data_array.shape[:2]}", parent=root)
+                        update_function()
+                        return
+                    elif kind == 'error':
+                        bar.stop();
+                        progress_win.grab_release();
+                        progress_win.destroy()
+                        messagebox.showerror(title, str(payload), parent=root)
+                        return
+            except queue.Empty:
+                pass
+            root.after(50, pump)  # ~20 Hz UI update
+
+        threading.Thread(target=worker, daemon=True).start()
+        pump()
+
+    def _coerce_to_4d(arr, parent, ask_width_fn):
+        arr = np.asarray(arr)
+        if arr.ndim == 4:
+            return arr
+        if arr.ndim == 3:
+            N, H, W = arr.shape
+            guessed = int(np.sqrt(N))
+            scan_width = ask_width_fn(parent, guessed, N)
+            if not scan_width:
+                return None
+            if N % scan_width != 0:
+                missing = scan_width - (N % scan_width)
+                arr = np.concatenate([arr, np.zeros((missing, H, W), dtype=arr.dtype)], axis=0)
+                N = arr.shape[0]
+            return arr.reshape(N // scan_width, scan_width, H, W)
+        messagebox.showerror("File Load", f"Expected 3D or 4D array, got {arr.shape}", parent=parent)
+        return None
+
+    def _extract_rsciio_array(obj):
+        """
+        Robustly extract a NumPy array from rsciio reader output.
+        Handles dicts with 'data', lists/tuples of such dicts, or arrays directly.
+        Returns (np.ndarray, debug_info_str) or raises ValueError.
+        """
+        import numpy as _np
+
+        def _from_dict(d):
+            if not isinstance(d, dict):
+                return None
+            if "data" in d:
+                arr = d["data"]
+                if isinstance(arr, _np.ndarray):
+                    return arr
+            # common alternates some readers use
+            for key in ("signals", "Signal", "items", "datasets"):
+                if key in d:
+                    v = d[key]
+                    # try first element or iterate
+                    if isinstance(v, (list, tuple)) and v:
+                        for item in v:
+                            got = _from_dict(item)
+                            if got is not None:
+                                return got
+            return None
+
+        # direct ndarray
+        if isinstance(obj, _np.ndarray):
+            return obj, f"type=ndarray shape={obj.shape} dtype={obj.dtype}"
+
+        # dict top-level
+        if isinstance(obj, dict):
+            arr = _from_dict(obj)
+            if arr is not None:
+                return arr, f"type=dict→ndarray shape={arr.shape} dtype={arr.dtype} keys={list(obj.keys())}"
+            raise ValueError(f"Dict had no usable 'data' (keys={list(obj.keys())})")
+
+        # list/tuple top-level
+        if isinstance(obj, (list, tuple)):
+            dbg = []
+            for i, item in enumerate(obj):
+                if isinstance(item, _np.ndarray):
+                    return item, f"type=list[{i}] ndarray shape={item.shape} dtype={item.dtype}"
+                if isinstance(item, dict):
+                    arr = _from_dict(item)
+                    if arr is not None:
+                        return arr, f"type=list[{i}] dict→ndarray shape={arr.shape} dtype={arr.dtype}"
+                dbg.append(type(item).__name__)
+            raise ValueError(f"List/tuple contained no ndarray/dict-with-data (inner types={dbg})")
+
+        raise ValueError(f"Unsupported rsciio return type: {type(obj).__name__}")
+
+    # UPDATED: cancellable .blo loader using rsciio
+    def load_blo():
+        nonlocal data_array, circle_center
+        path = filedialog.askopenfilename(parent=root, filetypes=[("Blockfile", "*.blo"), ("All files", "*.*")])
+        if not path:
+            return
+
+        def start_fn(cancel_flag, q):
+            q.put(('status', "Reading .blo…"))
+            if cancel_flag['stop']: return
+            obj = rs_blo.file_reader(path)  # may be dict, list, or ndarray
+            if cancel_flag['stop']: return
+            try:
+                arr, dbg = _extract_rsciio_array(obj)
+            except Exception as e:
+                q.put(('error', f"Extract failed: {e}"));
+                return
+            q.put(('status', f"Parsed: {dbg}"))
+            q.put(('done', arr))
+
+        _load_with_progress(start_fn, "Load .blo")
+
+    # UPDATED: cancellable .hspy loader using rsciio
+    def load_hspy():
+        nonlocal data_array, circle_center
+        path = filedialog.askopenfilename(parent=root, filetypes=[("HyperSpy", "*.hspy"), ("All files", "*.*")])
+        if not path:
+            return
+
+        def start_fn(cancel_flag, q):
+            q.put(('status', "Reading .hspy…"))
+            if cancel_flag['stop']: return
+            obj = rs_hspy.file_reader(path)  # may be dict, list, or ndarray
+            if cancel_flag['stop']: return
+            try:
+                arr, dbg = _extract_rsciio_array(obj)
+            except Exception as e:
+                q.put(('error', f"Extract failed: {e}"));
+                return
+            q.put(('status', f"Parsed: {dbg}"))
+            q.put(('done', arr))
+
+        _load_with_progress(start_fn, "Load .hspy")
 
     def load_data():
         """
         Loads a .npy file as a 4D data array.
+        Accepts both 4D (Y, X, H, W) and 3D (N, H, W) stacks.
+        If 3D, asks user for scan_width to reshape.
         """
-        nonlocal data_array
-        file_path = filedialog.askopenfilename(filetypes=[("NumPy Array", "*.npy")])
-        if file_path:
-            data_array = np.load(file_path)
-            update_function()
+        nonlocal data_array, circle_center
+        file_path = filedialog.askopenfilename(parent=root, filetypes=[("NumPy Array", "*.npy")])
+        if not file_path:
+            return
+
+        arr = load_npy_with_progress(file_path)
+        if arr.ndim == 4:
+            # Already correct
+            data_array = arr
+
+        elif arr.ndim == 3:
+            N, H, W = arr.shape
+            guessed_scan_width = int(np.sqrt(N))
+            scan_width = ask_scan_width(root, guessed_scan_width, N)
+            if not scan_width:
+                return
+            if N % scan_width != 0:
+                messagebox.showwarning(
+                    "Load NumPy Array",
+                    f"{N} frames not divisible by {scan_width}; last row will be padded.",
+                    parent=root
+                )
+                missing = scan_width - (N % scan_width)
+                pad = np.zeros((missing, H, W), dtype=arr.dtype)
+                arr = np.concatenate([arr, pad], axis=0)
+                N = arr.shape[0]
+
+            scan_height = N // scan_width
+            data_array = arr.reshape(scan_height, scan_width, H, W)
+
+        else:
+            messagebox.showerror("Load NumPy Array",
+                                 f"Expected 3D or 4D array, got shape {arr.shape}",
+                                 parent=root)
+            return
+
+        # Center integration mask + preview
+        H, W = data_array.shape[2], data_array.shape[3]
+        circle_center[0], circle_center[1] = W // 2, H // 2
+        update_pointer_image(data_array.shape[1] // 2, data_array.shape[0] // 2)
+
+        messagebox.showinfo("Import Complete",
+                            f"Loaded array with shape {data_array.shape[:2]} navigator.",
+                            parent=root)
+        update_function()
 
     def update_function(*args):
         """
@@ -400,15 +854,137 @@ def visualiser():
         function = functions[selected_function.get()]
 
         # Ensure the circle center is valid
+        #if circle_center[0] is None or circle_center[1] is None:
+        #    circle_center[0] = 0
+        #    circle_center[1] = 0
         if circle_center[0] is None or circle_center[1] is None:
-            circle_center[0] = 0
-            circle_center[1] = 0
+            H, W = data_array.shape[2], data_array.shape[3]  # diffraction frame (rows, cols)
+            circle_center[0] = W // 2  # x
+            circle_center[1] = H // 2  # y
 
         # Call the user function with radius and center
         main_image = function(data_array, radius_value.get(), tuple(circle_center))
         main_image_pil = Image.fromarray(normalize_to_8bit(main_image))
-        main_image_pil = main_image_pil.rotate(270, Image.NEAREST, expand = 1)
+        update_pointer_image(data_array.shape[1] // 2, data_array.shape[0] // 2)  # args: (x, y)
         update_main_image()
+
+    def export_blo():
+        """Prompt for pixel size + path, then write current data_array to .blo."""
+        if data_array is None:
+            messagebox.showwarning("Export .blo", "No data loaded.", parent=root);
+            return
+
+        px = ask_pixel_size_nm(root, guessed_nm=None)
+        if px is None:  # cancelled
+            return
+
+        path = filedialog.asksaveasfilename(
+            parent=root,
+            defaultextension=".blo",
+            filetypes=[("Blockfile", "*.blo"), ("All files", "*.*")],
+            initialfile="exported.blo",
+            title="Save .blo"
+        )
+        if not path:
+            return
+
+        try:
+            # You can set bin_data_to_128=False if you want native DP size preserved.
+            array2blo(data_array, px_nm=px, save_path=path,
+                      intensity_scaling="crop", bin_data_to_128=True)
+        except Exception as e:
+            messagebox.showerror("Export .blo", f"Failed to write file:\n{e}", parent=root);
+            return
+
+        messagebox.showinfo("Export .blo", f"Saved:\n{path}", parent=root)
+
+    def export_tiff_folder():
+        """Threaded, cancellable export of each DP as 00001.tiff, 00002.tiff, ..."""
+        if data_array is None:
+            messagebox.showwarning("Export TIFFs", "No data loaded.", parent=root)
+            return
+
+        out_dir = filedialog.askdirectory(parent=root, title="Select output folder")
+        if not out_dir:
+            return
+
+        Y, X, H, W = data_array.shape
+        total = Y * X
+        pad = len(str(total))  # zero-padding width
+
+        # Progress window (modal)
+        win = tk.Toplevel(root)
+        win.title("Export TIFFs")
+        win.transient(root)
+        win.grab_set()
+        tk.Label(win, text=f"Exporting {total} TIFFs…").pack(padx=10, pady=(10, 0))
+        bar = ttk.Progressbar(win, orient="horizontal", length=360, mode="determinate", maximum=total)
+        bar.pack(padx=10, pady=10)
+        lbl = tk.Label(win, text=f"0 / {total} (0.0%)")
+        lbl.pack(padx=10, pady=(0, 10))
+        cancel_flag = {'stop': False}
+
+        def _cancel():
+            cancel_flag['stop'] = True
+            lbl.config(text="Cancelling…")
+
+        tk.Button(win, text="Cancel", command=_cancel).pack(pady=(0, 10))
+
+        q = queue.Queue()
+
+        def worker():
+            try:
+                idx = 0
+                # Ensures directory exists
+                os.makedirs(out_dir, exist_ok=True)
+                for y in range(Y):
+                    if cancel_flag['stop']:
+                        q.put(('cancelled', None));
+                        return
+                    for x in range(X):
+                        if cancel_flag['stop']:
+                            q.put(('cancelled', None));
+                            return
+                        idx += 1
+                        fname = os.path.join(out_dir, f"{idx:0{pad}d}.tiff")
+                        # Write one DP (original dtype preserved)
+                        tiff.imwrite(fname, data_array[y, x], photometric='minisblack')
+                        # Post progress
+                        if idx % 1 == 0:
+                            q.put(('progress', idx))
+                q.put(('done', total))
+            except Exception as e:
+                q.put(('error', f"{type(e).__name__}: {e}"))
+
+        def pump():
+            try:
+                while True:
+                    kind, payload = q.get_nowait()
+                    if kind == 'progress':
+                        i = payload
+                        bar['value'] = i
+                        lbl.config(text=f"{i} / {total} ({(i / total) * 100:.1f}%)")
+                    elif kind == 'done':
+                        win.grab_release();
+                        win.destroy()
+                        messagebox.showinfo("Export TIFFs", f"Exported {total} TIFFs to:\n{out_dir}", parent=root)
+                        return
+                    elif kind == 'cancelled':
+                        win.grab_release();
+                        win.destroy()
+                        messagebox.showinfo("Export TIFFs", "Export cancelled.", parent=root)
+                        return
+                    elif kind == 'error':
+                        win.grab_release();
+                        win.destroy()
+                        messagebox.showerror("Export TIFFs", payload, parent=root)
+                        return
+            except queue.Empty:
+                pass
+            root.after(33, pump)  # ~30 Hz UI updates
+
+        threading.Thread(target=worker, daemon=True).start()
+        pump()
 
     # UI Layout
 
@@ -432,6 +1008,17 @@ def visualiser():
     load_series_b = tk.Button(top_frame, text="Load .tiff series", command=load_series)
     load_series_b.pack(side=tk.LEFT, padx=5, pady=5)
 
+
+    #blo reader
+    tk.Button(top_frame, text="Load .blo", command=load_blo).pack(side=tk.LEFT, padx=5, pady=5)
+    #hspy reader
+    tk.Button(top_frame, text="Load .hspy", command=load_hspy).pack(side=tk.LEFT, padx=5, pady=5)
+
+    export_blo_btn = tk.Button(top_frame, text="Export .blo", command=export_blo)
+    export_blo_btn.pack(side=tk.LEFT, padx=5, pady=5)
+
+    export_tif_btn = tk.Button(top_frame, text="Export TIFFs", command=export_tiff_folder)
+    export_tif_btn.pack(side=tk.LEFT, padx=5, pady=5)
 
     # Radius Label and Entry
     radius_label = tk.Label(top_frame, text="Detector Radius (px):")
@@ -470,4 +1057,6 @@ def visualiser():
     # Start the Tkinter main loop
     root.mainloop()
 
-visualiser()
+#visualiser()
+if __name__ == "__main__":
+    visualiser()
