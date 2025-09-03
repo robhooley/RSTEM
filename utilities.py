@@ -1,34 +1,25 @@
 from datetime import datetime
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 import matplotlib.font_manager as fm
-import os
 import cv2 as cv2
 import psutil
-import fnmatch
 from tqdm import tqdm
 import easygui as g
 import numpy as np
 from time import sleep
 import scipy.constants
-import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import random
 from rsciio.blockfile import file_writer
 
-from matplotlib.widgets import Slider
-import matplotlib.transforms as tfrms
 #from expert_pi.__main__ import window
 
 from expert_pi.__main__ import window #TODO something is not right with this on some older versions of expi
 from expert_pi import grpc_client
 from expert_pi.app import scan_helper
-from expert_pi.grpc_client.modules._common import DetectorType as DT, CondenserFocusType as CFT,RoiMode as RM
-from serving_manager.api import TorchserveRestManager
+from expert_pi.grpc_client.modules._common import DetectorType as DT
 from expert_pi.app import app
 from expert_pi.gui import main_window
-
-#from expert_pi.RSTEM.easy_4D_processing import scan_4D_basic
-
 
 window = main_window.MainWindow()
 controller = app.MainApp(window)

@@ -39,11 +39,13 @@ from expert_pi.RSTEM.utilities import get_microscope_parameters
 #manager.list_models()
 
 host_F2 = "172.23.158.142"
+host_F4 = "192.168.51.3"
 host_P3 = "172.20.32.1" #TODO confirm
 host_P2 = "172.25.15.0"
 host_global = '172.16.2.86'
+host_local = "172.27.153.166"
 
-host = host_global
+host = host_local
 
 
 def normalize_to_8bit(image):
@@ -223,8 +225,7 @@ def acquire_STEM(fov_um=None,pixel_time=5e-6,num_pixels=1024,scan_rotation_deg=N
     #scan_width_px = num_pixels,use_precession=False,camera_frequency_hz = None,
     #                                     STEM_dwell_time = pixel_time_us,scan_rotation=np.rad2deg(grpc_client.scanning.get_rotation()))
 
-    scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
-                                               detectors=[DT.BF,DT.HAADF])
+    scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1, detectors=[DT.BF,DT.HAADF])
     header, data = cache_client.get_item(scan_id, num_pixels ** 2) #retrive small measurements in one chunk
 
     BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
