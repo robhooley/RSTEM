@@ -1,8 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import json
-
-
 from matplotlib import patches, gridspec
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import pickle as p
@@ -15,9 +13,7 @@ from matplotlib.path import Path as matpath
 import fnmatch
 import matplotlib.colors as mcolors
 
-#comment this out depending on where the script is located
-from expert_pi.RSTEM.utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,check_memory,collect_metadata #utilities file in RSTEM directory
-#from utilities import create_circular_mask,get_microscope_parameters,spot_radius_in_px,check_memory
+
 
 from expert_pi import grpc_client
 from expert_pi.app import scan_helper
@@ -30,6 +26,9 @@ window = main_window.MainWindow()
 controller = app.MainApp(window)
 cache_client = controller.cache_client
 
+#comment this out depending on where the script is located
+from expert_pi.RSTEM.utilities import create_circular_mask,check_memory,collect_metadata,downsample_diffraction,array2blo #utilities file in RSTEM directory
+#from utilities import create_circular_mask,check_memory,collect_metadata,downsample_diffraction,array2blo
 
 def scan_4D_basic(scan_width_px=128,camera_frequency_hz=4500,use_precession=False):
     """Parameters
@@ -41,7 +40,7 @@ def scan_4D_basic(scan_width_px=128,camera_frequency_hz=4500,use_precession=Fals
 
     sufficient_RAM = check_memory(camera_frequency_hz,scan_width_px)
     if sufficient_RAM == False:
-        print("This dataset might not fit into RAM, trying anyway")
+        print("This dataset might not fit into RAM")
 
     metadata = collect_metadata(acquisition_type="Camera",scan_width_px=scan_width_px,use_precession=use_precession,pixel_time=1/camera_frequency_hz,scan_rotation=0,edx_enabled=False,camera_pixels=512)
 
@@ -69,6 +68,89 @@ def scan_4D_basic(scan_width_px=128,camera_frequency_hz=4500,use_precession=Fals
 
     return (image_array,metadata) #tuple with image data and metadata
 
+def scan_4D_basic_enhanced(scan_width_px=128, camera_frequency_hz=4500, use_precession=False):
+    """
+    Parameters
+    ----------
+    scan_width_px : int
+        Scan width/height in pixels (square raster).
+    camera_frequency_hz : int or float
+        Camera speed in frames per second (up to 72000).
+    use_precession : bool
+        Enable/disable precession.
+
+    Returns
+    -------
+    (image_array, metadata) : tuple
+        image_array has shape (scan_width_px, scan_width_px, camY, camX)
+    """
+    # --- Pre-checks & metadata ---
+    sufficient_RAM = check_memory(camera_frequency_hz, scan_width_px)
+    if not sufficient_RAM:
+        print("This dataset might not fit into RAM")
+
+    pixel_time = 1.0 / camera_frequency_hz  # compute once
+    metadata = collect_metadata(
+        acquisition_type="Camera",
+        scan_width_px=scan_width_px,
+        use_precession=use_precession,
+        pixel_time=pixel_time,
+        scan_rotation=0,
+        edx_enabled=False,
+        camera_pixels=512,
+    )
+
+    # --- Ensure STEM detectors are retracted (minimize RPC chatter) ---
+    # Combine boolean logic so we only query both and then act if needed.
+    bf_in = grpc_client.stem_detector.get_is_inserted(DT.BF)
+    haadf_in = grpc_client.stem_detector.get_is_inserted(DT.HAADF)
+    if bf_in or haadf_in:
+        if bf_in:
+            grpc_client.stem_detector.set_is_inserted(DT.BF, False)
+        if haadf_in:
+            grpc_client.stem_detector.set_is_inserted(DT.HAADF, False)
+        for _ in tqdm(range(5), desc="Stabilising after STEM detector retraction", unit=""):
+            sleep(1)
+
+    grpc_client.projection.set_is_off_axis_stem_enabled(False)
+    sleep(0.2)  # stabilisation after deflector change
+
+    # --- Start scan ---
+    scan_id = scan_helper.start_rectangle_scan(
+        pixel_time=np.round(pixel_time, 8),
+        total_size=scan_width_px,
+        frames=1,
+        detectors=[DT.Camera],
+        is_precession_enabled=use_precession,
+    )
+    print(f"Acquiring {scan_width_px} x {scan_width_px} px dataset at {camera_frequency_hz} fps")
+
+    # --- Retrieve first row to infer dtype/shape, then pre-allocate ---
+    # NOTE: ignore the 'header' to avoid Python work on every iteration.
+    _, first_row = cache_client.get_item(scan_id, scan_width_px)
+    row_block = first_row["cameraData"]  # shape: (scan_width_px, camY, camX)
+    if row_block.ndim != 3 or row_block.shape[0] != scan_width_px:
+        raise RuntimeError(f"Unexpected cameraData shape: {row_block.shape}")
+
+    camY, camX = row_block.shape[1], row_block.shape[2] #read camera size from first row of data
+    dtype = row_block.dtype  # keep native dtype to avoid copies/conversions
+
+    # Pre-allocate target 4D array: (scanY, scanX, camY, camX)
+    image_array = np.empty((scan_width_px, scan_width_px, camY, camX), dtype=dtype, order="C")
+
+    # Assign the first row (index 0) directly
+    image_array[0, :, :, :] = row_block  # vectorized write
+
+    # --- Retrieve remaining rows; no reshape, no per-iter shape math ---
+    for i in tqdm(range(1, scan_width_px), desc="Retrieving data from cache", total=scan_width_px - 1, unit="rows"):
+        _, data = cache_client.get_item(scan_id, scan_width_px)
+        row_block = data["cameraData"]  # expected shape: (scan_width_px, camY, camX)
+        # Optional safety assert in development:
+        # assert row_block.shape == (scan_width_px, camY, camX)
+        image_array[i, :, :, :] = row_block
+
+    print("Array ready")
+    return image_array, metadata
 
 
 def selected_area_diffraction(data_array):
@@ -212,7 +294,6 @@ def multi_VDF(data_array,radius=None):
         DF_output = np.reshape(DF_output,(dataset_shape)) #reshapes the DF intensities to the scan dimensions
         DF_images.append(DF_output) #adds DF images to a list
 
-
     if len(mask_list) ==1:
         grid_rows,grid_cols=1,2 #1x2 plot for 1 mask
     elif len(mask_list) ==2:
@@ -276,7 +357,7 @@ def multi_VDF(data_array,radius=None):
 
     return annotated_image ,sum_diffraction,DF_images #annotated image is scaled to show the final figure scale which is small #TODO make this better, maybe plot it again before export?
 
-def save_data(data_array,format=None,output_resolution=None):
+def save_data(data_array,format=None,output_resolution=None): #checked ok
     """Handles data saving for scan4D_basic
     Parameters
     data_array: from scan_4D_basic, either with or without metadata
@@ -294,35 +375,36 @@ def save_data(data_array,format=None,output_resolution=None):
 
     directory = g.diropenbox("select directory to save to", "select save directory")
     print("Preparing for data saving")
-    filename = directory + "\\4D-STEM_"
+    filename = directory + "\\4D_STEM_"
 
-    formats=["TIFFs","Numpy array","Pickle"]
+    formats=["TIFFs","Numpy array","Pickle"]#,"NanoMEGAS Block"]
     if format == None:
         format = g.choicebox("Select format for data to be saved","select format for data to be saved",formats,preselect=1)
     shape_4D = image_array.shape
+
+    if output_resolution is None:
+        output_resolution = g.choicebox("Enter pattern output resolution",choices=[128,256,"No Downscaling"])
+
+    if output_resolution == "No Downscaling":
+        pass
+    else:
+        print(f"Resizing diffraction patterns to {output_resolution}x{output_resolution}")
+        image_array = downsample_diffraction(image_array,int(output_resolution),"sum")
+        if metadata is not None:
+            metadata["Data rescaled to"]=int(output_resolution)
+
     if format == "TIFFs":
         print("Saving",shape_4D[0]*shape_4D[1],"files as .tiff")
         i = 0
         for row in tqdm(image_array):
             for image in row:
-                if output_resolution is not None:  # handles rescaling if used
-                    image = cv2.resize(image, [output_resolution, output_resolution])
-                filename = f"{directory}\\4D_stem_{i:06}.tiff" #increments the number of the frame
-                cv2.imwrite(filename, image) #writes the frame
+                filename = f"{directory}\\4D_STEM_{i:06}.tiff" #sets the number of the frame
+                cv2.imwrite(filename, image.astype(np.uint16)) #writes the frame
                 i += 1 #increases the number for the next frame
         print("Saving complete") #status update
     elif format == "Numpy array":
         num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.npy'))
         filename=filename+f"{num_files_in_dir+1}"
-        if output_resolution is not None:
-            print(f"Binning diffraction patterns to {output_resolution}x{output_resolution}px")
-            resized_images = []
-            for row in tqdm(image_array,unit="Chunks"):
-                for image in row:
-                    image_resized = cv2.resize(image,dsize=[output_resolution,output_resolution])
-                    resized_images.append(image_resized)
-            image_array = np.asarray(resized_images)
-            image_array = np.reshape(image_array, (shape_4D[0], shape_4D[1], output_resolution, output_resolution))
 
         print(f"Saving to numpy array, {filename}.npy")
         np.save(filename, image_array)
@@ -330,19 +412,15 @@ def save_data(data_array,format=None,output_resolution=None):
     elif format == "Pickle":
         num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.pdat'))
         filename = filename + f"{num_files_in_dir + 1}"
-        if output_resolution is not None:
-            print(f"Binning diffraction patterns to {output_resolution}x{output_resolution}px")
-            resized_images = []
-            for row in tqdm(image_array,unit="Chunks"):
-                for image in row:
-                    image_resized = cv2.resize(image,dsize=[output_resolution,output_resolution])
-                    resized_images.append(image_resized)
-            image_array = np.asarray(resized_images)
-            image_array = np.reshape(image_array, (shape_4D[0], shape_4D[1], output_resolution, output_resolution))
+
         print(f"saving as Pickle with metadata {filename}.pdat file")
         with open (f"{filename}.pdat","wb")as f:
             p.dump((image_array,metadata),f)
         print("Pickling complete")
+    elif format == "NanoMEGAS Block":
+        num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.blo'))
+        filename = rf"4D_STEM{num_files_in_dir+1}.blo"
+        array2blo(data=data_array,meta=metadata,filename=filename)
 
     if metadata is not None:
         metadata_name = directory + f"\\4D-STEM_{num_files_in_dir+1}_metadata.json"
