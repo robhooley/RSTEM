@@ -14,8 +14,6 @@ from matplotlib.path import Path as matpath
 import fnmatch
 import matplotlib.colors as mcolors
 
-
-
 from expert_pi import grpc_client
 from expert_pi.app import scan_helper
 from expert_pi.grpc_client.modules._common import DetectorType as DT, CondenserFocusType as CFT
@@ -31,45 +29,7 @@ cache_client = controller.cache_client
 from expert_pi.RSTEM.utilities import create_circular_mask,check_memory,collect_metadata,downsample_diffraction,array2blo #utilities file in RSTEM directory
 #from utilities import create_circular_mask,check_memory,collect_metadata,downsample_diffraction,array2blo
 
-def scan_4D_basic(scan_width_px=128,camera_frequency_hz=4500,use_precession=False):
-    """Parameters
-    scan width: pixels
-    camera_frequency: camera speed in frames per second up to 72000
-    use_precession: True or False
-    returns a tuple of (image_array, metadata)
-    """
-
-    sufficient_RAM = check_memory(camera_frequency_hz,scan_width_px)
-    if sufficient_RAM == False:
-        print("This dataset might not fit into RAM")
-
-    metadata = collect_metadata(acquisition_type="Camera",scan_width_px=scan_width_px,use_precession=use_precession,pixel_time=1/camera_frequency_hz,scan_rotation=0,edx_enabled=False)
-
-    if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(DT.HAADF) == True: #if either STEM detector is inserted
-        grpc_client.stem_detector.set_is_inserted(DT.BF,False) #retract BF detector
-        grpc_client.stem_detector.set_is_inserted(DT.HAADF, False) #retract ADF detector
-        for i in tqdm(range(5),desc="Stabilising after STEM detector retraction",unit=""):
-            sleep(1) #wait for 5 seconds
-    grpc_client.projection.set_is_off_axis_stem_enabled(False) #puts the beam back on the camera if in off-axis mode
-    sleep(0.2)  # stabilisation after deflector change
-    scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(1/camera_frequency_hz, 8), total_size=scan_width_px, frames=1, detectors=[DT.Camera], is_precession_enabled=use_precession)
-    print("Acquiring",scan_width_px,"x",scan_width_px,"px dataset at",camera_frequency_hz,"frames per second")
-    image_list = [] #empty list to take diffraction data
-    for i in tqdm(range(scan_width_px),desc="Retrieving data from cache",total=scan_width_px,unit="chunks"): #retrives data one scan row at a time to avoid crashes
-        header, data = cache_client.get_item(scan_id, scan_width_px)  # cache retrieval in rows
-        camera_size = data["cameraData"].shape[1],data["cameraData"].shape[2] #gets shape of diffraction patterns
-        image_data = data["cameraData"]  # take the data for that row
-        image_row = np.reshape(image_data, ( scan_width_px, camera_size[0], camera_size[1]))  # reshapes data to an individual image #TODO necessary?
-        image_list.append(image_row)  # adds it to the list of images
-
-    print("Reshaping array") #reshaping the array to match the 4D STEM acquisition
-    image_array = np.asarray(image_list) #converts the image list to an array
-    del image_list #flush image list to clear out RAM
-    print("Array reshaped")
-
-    return (image_array,metadata) #tuple with image data and metadata
-
-def scan_4D_basic_enhanced(scan_width_px=128, camera_frequency_hz=4500, use_precession=False):
+def scan_4D_basic(scan_width_px=128, camera_frequency_hz=4500, use_precession=False):
     """
     Parameters
     ----------
@@ -85,7 +45,7 @@ def scan_4D_basic_enhanced(scan_width_px=128, camera_frequency_hz=4500, use_prec
     (image_array, metadata) : tuple
         image_array has shape (scan_width_px, scan_width_px, camY, camX)
     """
-    # --- Pre-checks & metadata ---
+    # Pre-checks memory & gathers metadata
     sufficient_RAM = check_memory(camera_frequency_hz, scan_width_px)
     if not sufficient_RAM:
         print("This dataset might not fit into RAM")
@@ -99,9 +59,7 @@ def scan_4D_basic_enhanced(scan_width_px=128, camera_frequency_hz=4500, use_prec
         scan_rotation=0,
         edx_enabled=False
     )
-
-    # --- Ensure STEM detectors are retracted (minimize RPC chatter) ---
-    # Combine boolean logic so we only query both and then act if needed.
+    # Ensure STEM detectors are retracted and beam is on axis
     bf_in = grpc_client.stem_detector.get_is_inserted(DT.BF)
     haadf_in = grpc_client.stem_detector.get_is_inserted(DT.HAADF)
     if bf_in or haadf_in:
@@ -111,22 +69,15 @@ def scan_4D_basic_enhanced(scan_width_px=128, camera_frequency_hz=4500, use_prec
             grpc_client.stem_detector.set_is_inserted(DT.HAADF, False)
         for _ in tqdm(range(5), desc="Stabilising after STEM detector retraction", unit=""):
             sleep(1)
-
     grpc_client.projection.set_is_off_axis_stem_enabled(False)
     sleep(0.2)  # stabilisation after deflector change
 
-    # --- Start scan ---
-    scan_id = scan_helper.start_rectangle_scan(
-        pixel_time=np.round(pixel_time, 8),
-        total_size=scan_width_px,
-        frames=1,
-        detectors=[DT.Camera],
-        is_precession_enabled=use_precession,
-    )
-    print(f"Acquiring {scan_width_px} x {scan_width_px} px dataset at {camera_frequency_hz} fps")
+    # Start scan
+    scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(pixel_time, 8),total_size=scan_width_px,
+        frames=1,detectors=[DT.Camera],is_precession_enabled=use_precession)
 
-    # --- Retrieve first row to infer dtype/shape, then pre-allocate ---
-    # NOTE: ignore the 'header' to avoid Python work on every iteration.
+    print(f"Acquiring {scan_width_px} x {scan_width_px} px dataset at {camera_frequency_hz} fps")
+    #Retrieve first row to infer dtype/shape, then pre-allocate array
     _, first_row = cache_client.get_item(scan_id, scan_width_px)
     row_block = first_row["cameraData"]  # shape: (scan_width_px, camY, camX)
     if row_block.ndim != 3 or row_block.shape[0] != scan_width_px:
@@ -135,19 +86,15 @@ def scan_4D_basic_enhanced(scan_width_px=128, camera_frequency_hz=4500, use_prec
     camY, camX = row_block.shape[1], row_block.shape[2] #read camera size from first row of data
     dtype = row_block.dtype  # keep native dtype to avoid copies/conversions
 
-    # Pre-allocate target 4D array: (scanY, scanX, camY, camX)
+    #Pre-allocate target 4D array: (scanY, scanX, camY, camX)
     image_array = np.empty((scan_width_px, scan_width_px, camY, camX), dtype=dtype, order="C")
-
-    # Assign the first row (index 0) directly
+    #Assign the first row (index 0) directly
     image_array[0, :, :, :] = row_block  # vectorized write
-
-    # --- Retrieve remaining rows; no reshape, no per-iter shape math ---
+    #Retrieve remaining rows
     for i in tqdm(range(1, scan_width_px), desc="Retrieving data from cache", total=scan_width_px - 1, unit="rows"):
         _, data = cache_client.get_item(scan_id, scan_width_px)
         row_block = data["cameraData"]  # expected shape: (scan_width_px, camY, camX)
-        # Optional safety assert in development:
-        # assert row_block.shape == (scan_width_px, camY, camX)
-        image_array[i, :, :, :] = row_block
+        image_array[i, :, :, :] = row_block #assert row_block.shape == (scan_width_px, camY, camX)
 
     print("Array ready")
     return image_array, metadata
@@ -360,7 +307,6 @@ def multi_VDF(data_array,radius=None):
 def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_session=True):
     """
     Handles data saving for scan_4D_basic.
-
     Parameters
     ----------
     data_array : tuple | np.ndarray
@@ -370,18 +316,16 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
         If None, a dialog is shown.
     output_resolution : {128, 256, "No Downscaling", None}
         Used to set scaling of diffraction patterns to square only.
-        If None, a dialog is shown (for non-NanoMEGAS).
+        If None, a dialog is shown (for non-NanoMEGAS which has automatic downscaling).
     use_datetime_session : bool
-        If True, filenames include a date-time token. Otherwise, the original
-        “count files in dir and +1” logic is used.
+        If True, filenames include a date-time token. Otherwise count files in dir and +1.
     """
     # ---- Unpack and validate input -----------------------------------------
     if isinstance(data_array, (tuple, list)) and len(data_array) >= 2:
         image_array, metadata = data_array[0], data_array[1]
         print("Metadata exists")
         if metadata is not None and not isinstance(metadata, dict):
-            # Keep it strict; change to dict(metadata) if you expect mappings
-            raise TypeError("metadata must be a dict if provided.")
+            raise TypeError("metadata must be a dict if provided.") #reject if not dictionary
     else:
         image_array, metadata = data_array, None
         print("Metadata not present")
@@ -401,16 +345,10 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
     session_suffix = ""
     if use_datetime_session:
         session_suffix = "_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-
     # ---- Format selection ---------------------------------------------------
     valid_formats = ["TIFFs", "Numpy array", "Pickle", "NanoMEGAS Block"]
     if format is None:
-        format = g.choicebox(
-            "Select format for data to be saved",
-            "Select format for data to be saved",
-            valid_formats,
-            preselect=1
-        )
+        format = g.choicebox("Select format for data to be saved","Select format for data to be saved", valid_formats,preselect=1)
         if format is None:
             print("Save cancelled (no format).")
             return None
@@ -418,26 +356,21 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
     if format not in valid_formats:
         raise ValueError(f"Unsupported format: {format}")
 
-    # ---- Output resolution selection/normalization --------------------------
     def _normalize_out_res(val):
         if val is None:
             return None
         if isinstance(val, str):
-            if val.strip().lower() in {"no downscaling", "no_downscaling", "none"}:
+            if val.strip().lower() in {"no downscaling", "no_downscaling", "none"}: #handles nonstandard strings
                 return None
             if val.strip().isdigit():
-                return int(val.strip())
+                return int(val.strip()) #gui box returns strings, stripping to int
             # Let this raise below
         return int(val)
 
     if output_resolution is None and format != "NanoMEGAS Block":
-        choice = g.choicebox(
-            "Enter pattern output resolution",
-            "Output resolution",
-            choices=["128", "256", "No Downscaling"]
-        )
+        choice = g.choicebox("Enter pattern output resolution","Output resolution",choices=["128", "256", "No Downscaling"])
         if choice is None:
-            print("Save cancelled (no output resolution).")
+            print("Save cancelled")
             return None
         output_resolution = _normalize_out_res(choice)
     else:
@@ -455,14 +388,11 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
         if metadata is not None:
             metadata = dict(metadata)  # avoid mutating caller's dict
             metadata["Diffraction rescaled to"] = int(output_resolution)
-
     # Frame count (from current image_array)
     scan_y, scan_x, _, _ = image_array.shape
     n_frames = scan_y * scan_x
-
     metadata_path = None
-
-    # ---- Save branches ------------------------------------------------------
+    # ---- Save branches
     if format == "TIFFs":
         print(f"Saving {n_frames} files as .tiff")
         i = 0
@@ -472,23 +402,18 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
                     img16 = np.clip(image, 0, np.iinfo(np.uint16).max).astype(np.uint16, copy=False)
                 else:
                     img16 = image
-
                 if use_datetime_session:
-                    tif_name = f"{base}{session_suffix}_{i:06}.tiff"
+                    tiff_name = f"{base}{session_suffix}_{i:06}.tiff"
                 else:
-                    tif_name = f"{base}_{i:06}.tiff"
-
-                cv2.imwrite(tif_name, img16)
+                    tiff_name = f"{base}_{i:06}.tiff"
+                cv2.imwrite(tiff_name, img16)
                 i += 1
-
         if metadata is not None:
             if use_datetime_session:
                 metadata_path = os.path.join(directory, f"tiff_series_metadata{session_suffix}.json")
             else:
                 metadata_path = os.path.join(directory, "tiff_series_metadata.json")
-
         print("Saving complete")
-
     elif format == "Numpy array":
         if use_datetime_session:
             npy_path = f"{base}{session_suffix}.npy"
@@ -496,20 +421,15 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
             # “count files and +1”
             num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.npy'))
             npy_path = f"{base}_{num_files_in_dir + 1}.npy"
-
         print(f"Saving to numpy array, {npy_path}")
         np.save(npy_path, image_array)
-
         if metadata is not None:
             if use_datetime_session:
                 metadata_path = f"{base}{session_suffix}_NPY_metadata.json"
             else:
                 metadata_path = os.path.join(
-                    directory, f"4D_STEM_{num_files_in_dir + 1}_NPY_metadata.json"
-                )
-
+                    directory, f"4D_STEM_{num_files_in_dir + 1}_NPY_metadata.json")
         print("Saving complete")
-
     elif format == "Pickle":
         if use_datetime_session:
             pdat_path = f"{base}{session_suffix}.pdat"
@@ -519,9 +439,7 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
             pdat_path = f"{base}_{num_files_in_dir + 1}.pdat"
             metadata_path = (
                 os.path.join(directory, f"4D_STEM_{num_files_in_dir + 1}_pdat_metadata.json")
-                if metadata is not None else None
-            )
-
+                if metadata is not None else None)
         if metadata is not None:
             print(f"Saving as Pickle with metadata baked into {os.path.basename(pdat_path)}")
             with open(pdat_path, "wb") as f:
@@ -530,9 +448,7 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
             print(f"Saving as Pickle without metadata baked into {os.path.basename(pdat_path)}")
             with open(pdat_path, "wb") as f:
                 p.dump(image_array, f)
-
         print("Pickling complete")
-
     elif format == "NanoMEGAS Block":
         if use_datetime_session:
             blo_path = f"{base}{session_suffix}.blo"
@@ -542,16 +458,12 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
             blo_path = f"{base}_{num_files_in_dir + 1}.blo"
             metadata_path = (
                 os.path.join(directory, f"4D_STEM_{num_files_in_dir + 1}_blo_metadata.json")
-                if metadata is not None else None
-            )
-
+                if metadata is not None else None)
         print(f"Saving as blo file {blo_path}")
         array2blo(data=image_array, meta=metadata, filename=blo_path)
-
     if metadata is not None and metadata_path is not None:
         with open(metadata_path, "w", encoding="utf-8") as jf:
             json.dump(metadata, jf, indent=2)
-
     print("Export completed")
 
 
