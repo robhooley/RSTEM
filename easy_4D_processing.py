@@ -7,6 +7,7 @@ import pickle as p
 import easygui as g
 import cv2 as cv2
 import os
+import datetime
 from time import sleep
 from tqdm import tqdm
 from matplotlib.path import Path as matpath
@@ -42,7 +43,7 @@ def scan_4D_basic(scan_width_px=128,camera_frequency_hz=4500,use_precession=Fals
     if sufficient_RAM == False:
         print("This dataset might not fit into RAM")
 
-    metadata = collect_metadata(acquisition_type="Camera",scan_width_px=scan_width_px,use_precession=use_precession,pixel_time=1/camera_frequency_hz,scan_rotation=0,edx_enabled=False,camera_pixels=512)
+    metadata = collect_metadata(acquisition_type="Camera",scan_width_px=scan_width_px,use_precession=use_precession,pixel_time=1/camera_frequency_hz,scan_rotation=0,edx_enabled=False)
 
     if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(DT.HAADF) == True: #if either STEM detector is inserted
         grpc_client.stem_detector.set_is_inserted(DT.BF,False) #retract BF detector
@@ -96,8 +97,7 @@ def scan_4D_basic_enhanced(scan_width_px=128, camera_frequency_hz=4500, use_prec
         use_precession=use_precession,
         pixel_time=pixel_time,
         scan_rotation=0,
-        edx_enabled=False,
-        camera_pixels=512,
+        edx_enabled=False
     )
 
     # --- Ensure STEM detectors are retracted (minimize RPC chatter) ---
@@ -357,76 +357,204 @@ def multi_VDF(data_array,radius=None):
 
     return annotated_image ,sum_diffraction,DF_images #annotated image is scaled to show the final figure scale which is small #TODO make this better, maybe plot it again before export?
 
-def save_data(data_array,format=None,output_resolution=None): #checked ok
-    """Handles data saving for scan4D_basic
-    Parameters
-    data_array: from scan_4D_basic, either with or without metadata
-    format: default None
-    output_resolution:Default None, used to set scaling of diffraction patterns, enter 128 or 256, will scale to square only
+def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_session=True):
     """
-    if type(data_array) is tuple: #checks for metadata dictionary
-        image_array = data_array[0]
-        metadata = data_array[1]
+    Handles data saving for scan_4D_basic.
+
+    Parameters
+    ----------
+    data_array : tuple | np.ndarray
+        From scan_4D_basic, either (image_array, metadata) or just image_array.
+    format : str | None
+        One of "TIFFs", "Numpy array", "Pickle", "NanoMEGAS Block".
+        If None, a dialog is shown.
+    output_resolution : {128, 256, "No Downscaling", None}
+        Used to set scaling of diffraction patterns to square only.
+        If None, a dialog is shown (for non-NanoMEGAS).
+    use_datetime_session : bool
+        If True, filenames include a date-time token. Otherwise, the original
+        “count files in dir and +1” logic is used.
+    """
+    # ---- Unpack and validate input -----------------------------------------
+    if isinstance(data_array, (tuple, list)) and len(data_array) >= 2:
+        image_array, metadata = data_array[0], data_array[1]
         print("Metadata exists")
+        if metadata is not None and not isinstance(metadata, dict):
+            # Keep it strict; change to dict(metadata) if you expect mappings
+            raise TypeError("metadata must be a dict if provided.")
     else:
-        image_array = data_array
-        metadata=None
+        image_array, metadata = data_array, None
         print("Metadata not present")
 
-    directory = g.diropenbox("select directory to save to", "select save directory")
-    print("Preparing for data saving")
-    filename = directory + "\\4D_STEM_"
+    if not hasattr(image_array, "ndim") or image_array.ndim != 4:
+        raise ValueError("Expected a 4D array shaped (scan_y, scan_x, pat_y, pat_x).")
 
-    formats=["TIFFs","Numpy array","Pickle"]#,"NanoMEGAS Block"]
-    if format == None:
-        format = g.choicebox("Select format for data to be saved","select format for data to be saved",formats,preselect=1)
-    shape_4D = image_array.shape
+    # ---- Directory selection ------------------------------------------------
+    directory = g.diropenbox("Select directory to save to", "Select save directory")
+    if not directory:
+        print("Save cancelled (no directory).")
+        return None
+    os.makedirs(directory, exist_ok=True)
 
-    if output_resolution is None:
-        output_resolution = g.choicebox("Enter pattern output resolution",choices=[128,256,"No Downscaling"])
+    # Base filename
+    base = os.path.join(directory, "4D_STEM")
+    session_suffix = ""
+    if use_datetime_session:
+        session_suffix = "_" + datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    if output_resolution == "No Downscaling":
-        pass
+    # ---- Format selection ---------------------------------------------------
+    valid_formats = ["TIFFs", "Numpy array", "Pickle", "NanoMEGAS Block"]
+    if format is None:
+        format = g.choicebox(
+            "Select format for data to be saved",
+            "Select format for data to be saved",
+            valid_formats,
+            preselect=1
+        )
+        if format is None:
+            print("Save cancelled (no format).")
+            return None
+
+    if format not in valid_formats:
+        raise ValueError(f"Unsupported format: {format}")
+
+    # ---- Output resolution selection/normalization --------------------------
+    def _normalize_out_res(val):
+        if val is None:
+            return None
+        if isinstance(val, str):
+            if val.strip().lower() in {"no downscaling", "no_downscaling", "none"}:
+                return None
+            if val.strip().isdigit():
+                return int(val.strip())
+            # Let this raise below
+        return int(val)
+
+    if output_resolution is None and format != "NanoMEGAS Block":
+        choice = g.choicebox(
+            "Enter pattern output resolution",
+            "Output resolution",
+            choices=["128", "256", "No Downscaling"]
+        )
+        if choice is None:
+            print("Save cancelled (no output resolution).")
+            return None
+        output_resolution = _normalize_out_res(choice)
     else:
+        # Normalize programmatic input too
+        if format != "NanoMEGAS Block":
+            output_resolution = _normalize_out_res(output_resolution)
+        else:
+            output_resolution = None  # Always skip for NanoMEGAS
+
+    # ---- Optional downsampling ---------------------------------------------
+    if output_resolution is not None:
         print(f"Resizing diffraction patterns to {output_resolution}x{output_resolution}")
-        image_array = downsample_diffraction(image_array,int(output_resolution),"sum")
+        # expects: downsample_diffraction(array, size, mode)
+        image_array = downsample_diffraction(image_array, int(output_resolution), "sum")
         if metadata is not None:
-            metadata["Data rescaled to"]=int(output_resolution)
+            metadata = dict(metadata)  # avoid mutating caller's dict
+            metadata["Diffraction rescaled to"] = int(output_resolution)
 
+    # Frame count (from current image_array)
+    scan_y, scan_x, _, _ = image_array.shape
+    n_frames = scan_y * scan_x
+
+    metadata_path = None
+
+    # ---- Save branches ------------------------------------------------------
     if format == "TIFFs":
-        print("Saving",shape_4D[0]*shape_4D[1],"files as .tiff")
+        print(f"Saving {n_frames} files as .tiff")
         i = 0
-        for row in tqdm(image_array):
+        for row in tqdm(image_array, desc="Writing TIFFs"):
             for image in row:
-                filename = f"{directory}\\4D_STEM_{i:06}.tiff" #sets the number of the frame
-                cv2.imwrite(filename, image.astype(np.uint16)) #writes the frame
-                i += 1 #increases the number for the next frame
-        print("Saving complete") #status update
-    elif format == "Numpy array":
-        num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.npy'))
-        filename=filename+f"{num_files_in_dir+1}"
+                if image.dtype != np.uint16:
+                    img16 = np.clip(image, 0, np.iinfo(np.uint16).max).astype(np.uint16, copy=False)
+                else:
+                    img16 = image
 
-        print(f"Saving to numpy array, {filename}.npy")
-        np.save(filename, image_array)
+                if use_datetime_session:
+                    tif_name = f"{base}{session_suffix}_{i:06}.tiff"
+                else:
+                    tif_name = f"{base}_{i:06}.tiff"
+
+                cv2.imwrite(tif_name, img16)
+                i += 1
+
+        if metadata is not None:
+            if use_datetime_session:
+                metadata_path = os.path.join(directory, f"tiff_series_metadata{session_suffix}.json")
+            else:
+                metadata_path = os.path.join(directory, "tiff_series_metadata.json")
+
         print("Saving complete")
+
+    elif format == "Numpy array":
+        if use_datetime_session:
+            npy_path = f"{base}{session_suffix}.npy"
+        else:
+            # “count files and +1”
+            num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.npy'))
+            npy_path = f"{base}_{num_files_in_dir + 1}.npy"
+
+        print(f"Saving to numpy array, {npy_path}")
+        np.save(npy_path, image_array)
+
+        if metadata is not None:
+            if use_datetime_session:
+                metadata_path = f"{base}{session_suffix}_NPY_metadata.json"
+            else:
+                metadata_path = os.path.join(
+                    directory, f"4D_STEM_{num_files_in_dir + 1}_NPY_metadata.json"
+                )
+
+        print("Saving complete")
+
     elif format == "Pickle":
-        num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.pdat'))
-        filename = filename + f"{num_files_in_dir + 1}"
+        if use_datetime_session:
+            pdat_path = f"{base}{session_suffix}.pdat"
+            metadata_path = f"{base}{session_suffix}_pdat_metadata.json" if metadata is not None else None
+        else:
+            num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.pdat'))
+            pdat_path = f"{base}_{num_files_in_dir + 1}.pdat"
+            metadata_path = (
+                os.path.join(directory, f"4D_STEM_{num_files_in_dir + 1}_pdat_metadata.json")
+                if metadata is not None else None
+            )
 
-        print(f"saving as Pickle with metadata {filename}.pdat file")
-        with open (f"{filename}.pdat","wb")as f:
-            p.dump((image_array,metadata),f)
+        if metadata is not None:
+            print(f"Saving as Pickle with metadata baked into {os.path.basename(pdat_path)}")
+            with open(pdat_path, "wb") as f:
+                p.dump((image_array, metadata), f)
+        else:
+            print(f"Saving as Pickle without metadata baked into {os.path.basename(pdat_path)}")
+            with open(pdat_path, "wb") as f:
+                p.dump(image_array, f)
+
         print("Pickling complete")
-    elif format == "NanoMEGAS Block":
-        num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.blo'))
-        filename = rf"4D_STEM{num_files_in_dir+1}.blo"
-        array2blo(data=data_array,meta=metadata,filename=filename)
 
-    if metadata is not None:
-        metadata_name = directory + f"\\4D-STEM_{num_files_in_dir+1}_metadata.json"
-        open_json = open(metadata_name,"w")
-        json.dump(metadata,open_json,indent=6)
-        open_json.close()
+    elif format == "NanoMEGAS Block":
+        if use_datetime_session:
+            blo_path = f"{base}{session_suffix}.blo"
+            metadata_path = f"{base}{session_suffix}_blo_metadata.json" if metadata is not None else None
+        else:
+            num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.blo'))
+            blo_path = f"{base}_{num_files_in_dir + 1}.blo"
+            metadata_path = (
+                os.path.join(directory, f"4D_STEM_{num_files_in_dir + 1}_blo_metadata.json")
+                if metadata is not None else None
+            )
+
+        print(f"Saving as blo file {blo_path}")
+        array2blo(data=image_array, meta=metadata, filename=blo_path)
+
+    if metadata is not None and metadata_path is not None:
+        with open(metadata_path, "w", encoding="utf-8") as jf:
+            json.dump(metadata, jf, indent=2)
+
+    print("Export completed")
+
+
 
 #checked ok
 def import_tiff_series(scan_width=None,load_metadata=False):

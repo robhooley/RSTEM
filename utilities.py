@@ -109,9 +109,9 @@ def calculate_wavelength(energy):
     wavelength = 2*np.pi/k
     return wavelength*1e12  # to picometers
 
-def generate_colorlist(num_colors_needed,mode=None):
+def generate_colourlist(num_colors_needed, mode=None):
     if mode == "Explore": #this is only used as a joke
-        print("Using Explores colour palette")
+        print("Using Explores colour palette (Sorry Raman...)")
         reasonable_colors = ["#FF69B4", '#FF00FF', '#F3CFC6', '#FA8072', "#DA70D6","#FAA0A0","#F89880","#A95C68","#E30B5C","#FF10F0","#D8BFD8","#E37383",
                              "#E0BFB8","#9F2B68","#F2D2BD","#DE3163","#FF7F50"]
         color_list_output = reasonable_colors[:num_colors_needed]
@@ -130,9 +130,9 @@ def generate_colorlist(num_colors_needed,mode=None):
 
     return color_list_output
 
-def generate_colormaps(num_colors,num_bins=100,mode=None):
+def generate_colourmaps(num_colors, num_bins=100, mode=None):
     colormaps = []
-    color_list = generate_colorlist(num_colors,mode)
+    color_list = generate_colourlist(num_colors, mode)
     for color in color_list:
         colors_ = [mcolors.to_rgb('black'), mcolors.to_rgb(color)]  #
         cmap_name = 'black_' + color
@@ -395,7 +395,7 @@ def array2blo(data: np.ndarray,meta: dict,filename,intensity_scaling="crop",bin_
 
     if bin_data_to_128:
         data = downsample_diffraction(data,rescale_to=128,mode="sum")
-
+        print("Data downscaled to 128")
     navigator = data.sum(axis=(2, 3))
 
     lower_percentile, upper_percentile = np.percentile(navigator, [1, 99])  # Get 1st and 99th percentiles
