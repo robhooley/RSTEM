@@ -3,9 +3,8 @@ import cv2 as cv2
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
-#from serving_manager.api import registration_model
-#from serving_manager.api import super_resolution_model
-#from serving_manager.api import TorchserveRestManager
+#from serving_manager.api import registration_model #serving manager 0.6.3
+#from serving_manager.api import TorchserveRestManager #serving manager 0.6.3
 
 from expert_pi import grpc_client
 from expert_pi.app import scan_helper
@@ -17,13 +16,10 @@ window = main_window.MainWindow()
 controller = app.MainApp(window)
 cache_client = controller.cache_client
 
-
 from serving_manager.management.torchserve_rest_manager import TorchserveRestManager #serving manager 0.9.3
 from serving_manager.tem_models.specific_model_functions import registration_model #serving manager 0.9.3
 
-
-host = "172.27.153.166"
-#host = "192.168.51.3"
+host = "192.168.51.3"
 
 def view_all_models(host=None):
     if not host:
@@ -35,41 +31,90 @@ def view_all_models(host=None):
 
     return models
 
-def align_image_series(image_series): #single series in a list
+def align_image_series(image_series, plot=False,host="192.168.51.3"):
+    """
+    Align a list of 2D images to the first frame using the TorchServe model
+    'TEMRegistration'. Self-contained: it manages its own TorchServe manager.
+    Returns: (aligned_list, summed_image, shifts)
+    """
 
-    initial_image = image_series[0] #first image in series
-    initial_image_shape = initial_image.shape #shape of image
-    shifts = [] #empty list for shifts
-    translated_list = [] #empty list for output images
-    for image in tqdm(range(len(image_series))): #iterate over series
-        translated_image = image_series[image].astype(np.float64) #take the image and convert to 64 bit for ML model
-        registration_values = registration_model(np.concatenate([initial_image,translated_image],axis=1), 'TEMRegistration', host=host, port='7443', image_encoder='.tiff') #run through registration model
-        translation_values = registration_values[0]["translation"] #normalised between 0,1
-        x_pixels_shift = translation_values[0]*initial_image_shape[0] #multiply by number of pixels to get pixel shift
-        y_pixels_shift = translation_values[1]*initial_image_shape[1]
-        shifts.append((x_pixels_shift,y_pixels_shift)) #write pixel shifts to list
-        matrix = np.float32([[1,0,x_pixels_shift],[0,1,y_pixels_shift]]) #matrix to shift correct the images
-        transposed_image = cv2.warpAffine(translated_image.astype(np.uint16),matrix,(initial_image_shape[1],initial_image_shape[0])) #offset the image by the measured pixel shifts
-        translated_list.append(transposed_image) #add the shifted image to a list
+    if not isinstance(image_series, list) or len(image_series) == 0:
+        raise Exception("Dataset must be a non-empty list of images")
 
-    summing_array = np.asarray(translated_list)  #convert the list to an array
-    summed_image = np.sum(summing_array, 0, dtype=np.float64)#sum the stack together
+    initial_image = np.array(image_series[0], dtype=np.float64, copy=False)
+    H, W = initial_image.shape
+    shifts = []
+    translated_list = []
+
+    # Self-contained TorchServe session (same model name)
+    manager = TorchserveRestManager(
+        inference_port='8080',
+        management_port='8081',
+        host=host,
+        image_encoder='.tiff'
+    )
+    # Safe to call repeatedly; if already scaled/loaded, server should no-op
+    try:
+        manager.scale(model_name="TEMRegistration")
+    except Exception:
+        #if scaling does not work, end the alignment
+        pass
+
+    for idx in tqdm(range(len(image_series)), desc="Aligning frames", unit="img"):
+        moving = np.array(image_series[idx], dtype=np.float64, copy=False)
+
+        # Side-by-side concat (H, 2W), matching your registration model contract
+        reg_input = np.concatenate([initial_image, moving], axis=1)
+        registration_values = registration_model(
+            reg_input,
+            'TEMRegistration',
+            host=host,
+            port='7443',
+            image_encoder='.tiff'
+        )
+        # Expect [dx_norm, dy_norm] in [0..1]
+        dx_norm, dy_norm = registration_values[0]["translation"]
+        x_pixels_shift = dx_norm * H
+        y_pixels_shift = dy_norm * W
+        shifts.append((x_pixels_shift, y_pixels_shift))
+
+        M = np.float32([[1, 0, x_pixels_shift], [0, 1, y_pixels_shift]])
+        warped = cv2.warpAffine(
+            moving.astype(np.uint16, copy=False),
+            M,
+            (W, H),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0
+        )
+        translated_list.append(warped)
+
+    summed_image = np.sum(np.asarray(translated_list), axis=0, dtype=np.float64)
+
+    if plot:
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        fig.set_size_inches(15,5)
+        ax1.imshow(initial_image, cmap="gray")
+        ax1.title.set_text("Initial Image")
+        plt.setp(ax1, xticks=[], yticks=[])  # removes ticks
+        ax2.imshow(image_series[-1], cmap="gray")
+        ax2.title.set_text("Final Image")
+        plt.setp(ax2, xticks=[], yticks=[])  # removes ticks
+        ax3.imshow(summed_image, cmap="gray")
+        ax3.title.set_text(f"Summation of {len(image_series)+1} images")
+        plt.setp(ax3, xticks=[], yticks=[])  # removes ticks
+
+        plt.show()
+
+    return translated_list, summed_image, shifts
 
 
-    fig,ax1,ax2,ax3 = plt.subplot(1,3)
-    ax1.imshow(initial_image,cmap="grey")
-    ax2.imshow(image_series[-1],cmap="grey")
-    ax3.imshow(summed_image,cmap="grey")
+def get_spot_positions(image,threshold=0,host="192.168.51.3"):
 
-    plt.show()
-
-    return translated_list,summed_image,shifts #return the shifted images in a list, the summed image, and the shifts
-
-def get_spot_positions(image,threshold=0):
     try:
         manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
                                         image_encoder='.tiff') #start server manager
-        manager.scale(model_name="spot_segmentation",max_worker=2) #scale the server to have 2 processes
+        manager.scale(model_name="spot_segmentation") #scale the server to have 2 processes
         results = manager.infer(image=image, model_name='spot_segmentation')  # send image to spot detection
         spots = results["objects"] #retrieve spot details
     except ConnectionError:
@@ -124,7 +169,7 @@ def rotational_correction(raw_shift, fov_x, fov_y, theta_deg, y_down=True):
     return float(delta_deflector[0]), float(delta_deflector[1])
 
 
-def ML_drift_corrected_imaging(num_frames, pixel_time_us=None, num_pixels=None): #TODO untested live
+def ML_drift_corrected_imaging(num_frames, pixel_time_us=None, num_pixels=None,host="192.168.51.3"): #TODO untested live
     """Parameters
     num_frames : integer number of frames to acquire (total, including the seed frame)
     pixel_time_us: pixel dwell time in microseconds; if None, read from UI
@@ -151,7 +196,7 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None, num_pixels=None):
 
     # --- Scan rotation (ok to default to 0° if unavailable) -----------------
     try:
-        theta_val = np.rad2deg(grpc_client.scanning.get_scan_rotation())
+        theta_val = np.rad2deg(grpc_client.scanning.get_rotation())
         theta_deg = float(theta_val) if theta_val is not None else 0.0
     except Exception:
         raise RuntimeError(f"Cannot read Scan Rotation from HW")
@@ -195,14 +240,17 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None, num_pixels=None):
 
         frame = {"BF": None, "HAADF": None}
         stem = data.get("stemData", {})
-
-        # If your API uses enums as keys, adapt to: stem[DT.BF] / stem[DT.HAADF]
+       
+        
         if "BF" in stem and stem["BF"] is not None:
             frame["BF"] = np.asarray(stem["BF"]).reshape(num_pixels, num_pixels).astype(np.float64, copy=False)
         if "HAADF" in stem and stem["HAADF"] is not None:
             frame["HAADF"] = np.asarray(stem["HAADF"]).reshape(num_pixels, num_pixels).astype(np.float64, copy=False)
 
         return frame
+    manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
+                                        image_encoder='.tiff') #start serving manager
+    manager.scale(model_name="TEMRegistration")
 
     # --- tracking frame -----------------------------------------
     initial_shift = grpc_client.illumination.get_shift(grpc_client.illumination.DeflectorType.Scan)

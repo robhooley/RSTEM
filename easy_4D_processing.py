@@ -7,7 +7,7 @@ import pickle as p
 import easygui as g
 import cv2 as cv2
 import os
-import datetime
+from datetime import datetime
 from time import sleep
 from tqdm import tqdm
 from matplotlib.path import Path as matpath
