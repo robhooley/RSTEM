@@ -15,8 +15,6 @@ cache_client = controller.cache_client
 
 from expert_pi.RSTEM.utilities import check_memory,collect_metadata
 
-#TODO needs STEM server 0.10
-
 def crop_images_to_fixed_square(image_rows, square_size):
     """
     Crop a nested list of images (as NumPy arrays) to a fixed square size, centered around the middle
@@ -27,38 +25,29 @@ def crop_images_to_fixed_square(image_rows, square_size):
     :return: Nested list of cropped NumPy array images (rows of cropped images)
     """
     cropped_rows = []  # List to store cropped rows
-
     while image_rows:
         # Remove the first row from the list
         row = image_rows.pop(0)
-
         # Assume all images in the row have the same dimensions (use the first image)
         height, width = row[0].shape[:2]
-
         # Validate the square size once for the row
         if square_size > height or square_size > width:
             raise ValueError(
-                f"Square size {square_size} is too large for images with dimensions ({height}, {width})"
-            )
-
+                f"Square size {square_size} is too large for images with dimensions ({height}, {width})")
         # Calculate the top-left corner once for the row
         top = (height - square_size) // 2
         left = (width - square_size) // 2
-
         # Process the row
         cropped_row = []
         for img in row:
-            # Crop the image using the precomputed coordinates
-            cropped_img = img[top:top + square_size, left:left + square_size]
-            cropped_row.append(cropped_img)
-
-        # Add the processed row to the cropped_rows list
+            cropped_img = img[top:top + square_size, left:left + square_size]# Crop the image using the precomputed coordinates
+            cropped_row.append(cropped_img)# Add the processed row to the cropped_rows list
         cropped_rows.append(cropped_row)
 
     return cropped_rows
 
 
-def scan_4D_fast(scan_width_px=128,camera_frequency_hz=18000,use_precession=False,roi_mode=128):
+def scan_4D(scan_width_px=128,dwell_time=5.556e-5,use_precession=False,roi_mode=128):#TODO refactor to pre-allocation
     """Parameters
     scan width: pixels
     camera_frequency: camera speed in frames per second up to 72000
@@ -67,7 +56,7 @@ def scan_4D_fast(scan_width_px=128,camera_frequency_hz=18000,use_precession=Fals
     returns a tuple of (image_array, metadata)
     """
 
-    sufficient_RAM = check_memory(camera_frequency_hz,scan_width_px,roi_mode)
+    sufficient_RAM = check_memory(1/dwell_time,scan_width_px,roi_mode)
     if sufficient_RAM == False:
         print("This dataset will probably not fit into RAM, trying anyway but expect a crash")
      #gets the microscope and acquisition metadata
@@ -78,7 +67,7 @@ def scan_4D_fast(scan_width_px=128,camera_frequency_hz=18000,use_precession=Fals
             sleep(1) #wait for 5 seconds
     grpc_client.projection.set_is_off_axis_stem_enabled(False) #puts the beam back on the camera if in off-axis mode
     sleep(0.2)  # stabilisation after deflector change
-    metadata = collect_metadata(acquisition_type="Camera",scan_width_px = scan_width_px, use_precession= use_precession, pixel_time = 1/camera_frequency_hz,scan_rotation= 0,camera_pixels = roi_mode)
+    metadata = collect_metadata(acquisition_type="Camera",scan_width_px = scan_width_px, use_precession= use_precession, pixel_time = dwell_time,scan_rotation= np.rad2deg(grpc_client.scanning.get_rotation()))
     #sets to ROI mode
     if roi_mode==128: #512x128 px
         grpc_client.scanning.set_camera_roi(roi_mode=RM.Lines_128, use16bit=False)
@@ -89,8 +78,8 @@ def scan_4D_fast(scan_width_px=128,camera_frequency_hz=18000,use_precession=Fals
     else:
         grpc_client.scanning.set_camera_roi(roi_mode=RM.Disabled,use16bit=True)
 
-    scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(1/camera_frequency_hz, 8), total_size=scan_width_px, frames=1, detectors=[DT.Camera], is_precession_enabled=use_precession)
-    print("Acquiring",scan_width_px,"x",scan_width_px,"px dataset at",camera_frequency_hz,"frames per second")
+    scan_id = scan_helper.start_rectangle_scan(pixel_time=dwell_time, total_size=scan_width_px, frames=1, detectors=[DT.Camera], is_precession_enabled=use_precession)
+    print(f"Acquiring {scan_width_px} x {scan_width_px} px dataset at {1/dwell_time} frames per second")
     image_list = [] #empty list to take diffraction data
     for i in tqdm(range(scan_width_px),desc="Retrieving data from cache",total=scan_width_px,unit="rows"): #retrives data one scan row at a time to avoid crashes
         header, data = cache_client.get_item(scan_id, scan_width_px)  # cache retrieval in rows

@@ -75,19 +75,15 @@ def scan_4D_basic(scan_width_px=128, camera_frequency_hz=4500, use_precession=Fa
     # Start scan
     scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(pixel_time, 8),total_size=scan_width_px,
         frames=1,detectors=[DT.Camera],is_precession_enabled=use_precession)
-
     print(f"Acquiring {scan_width_px} x {scan_width_px} px dataset at {camera_frequency_hz} fps")
     #Retrieve first row to infer dtype/shape, then pre-allocate array
     _, first_row = cache_client.get_item(scan_id, scan_width_px)
     row_block = first_row["cameraData"]  # shape: (scan_width_px, camY, camX)
     if row_block.ndim != 3 or row_block.shape[0] != scan_width_px:
         raise RuntimeError(f"Unexpected cameraData shape: {row_block.shape}")
-
     camY, camX = row_block.shape[1], row_block.shape[2] #read camera size from first row of data
     dtype = row_block.dtype  # keep native dtype to avoid copies/conversions
-
-    #Pre-allocate target 4D array: (scanY, scanX, camY, camX)
-    image_array = np.empty((scan_width_px, scan_width_px, camY, camX), dtype=dtype, order="C")
+    image_array = np.empty((scan_width_px, scan_width_px, camY, camX), dtype=dtype, order="C") #Pre-allocate target 4D array: (scanY, scanX, camY, camX)
     #Assign the first row (index 0) directly
     image_array[0, :, :, :] = row_block  # vectorized write
     #Retrieve remaining rows
