@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 #from serving_manager.api import registration_model #serving manager 0.6.3
 #from serving_manager.api import TorchserveRestManager #serving manager 0.6.3
-
+from time import time
 from expert_pi import grpc_client
 from expert_pi.app import scan_helper
 from expert_pi.grpc_client.modules._common import DetectorType as DT
@@ -19,22 +19,33 @@ cache_client = controller.cache_client
 from serving_manager.management.torchserve_rest_manager import TorchserveRestManager #serving manager 0.9.3
 from serving_manager.tem_models.specific_model_functions import registration_model #serving manager 0.9.3
 
-host = "192.168.51.3"
+from expert_pi.RSTEM.utilities import create_circular_mask
+host = "192.168.51.3" #for client PC on a TENSOR network
 
-def view_all_models(host=None):
-    if not host:
-        host="192.168.51.3" #uses the local server host if it runs on a client PC
+def view_all_models(host="192.168.51.3"):
     manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host, image_encoder='.tiff') #contacts the model manager
     models = manager.list_all_models() #gets all of the available models
+    descriptions = []
     for i in models:
-        print(i)
+        description = manager.describe_model(i)
+        print(f"{description[0]["modelName"]}, Version {description[0]["modelVersion"]}, Current workers available {description[0]["minWorkers"]}, Processor type {description[0]["deviceType"]}")
+        descriptions.append(description[0]["modelName"],description[0]["minWorkers"])
+    return descriptions
 
-    return models
+def model_has_workers(model_name,host="192.168.51.3"):
+    manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
+                                    image_encoder='.tiff')  # contacts the model manager
+    model_status = manager.describe_model(model_name)
+    if model_status[0]["minWorkers"] is not 0:
+        has_workers = True
+    else: has_workers = False
+
+    return has_workers
 
 def align_image_series(image_series, plot=False,host="192.168.51.3"):
     """
-    Align a list of 2D images to the first frame using the TorchServe model
-    'TEMRegistration'. Self-contained: it manages its own TorchServe manager.
+    Align a list of 2D images to the first frame using the TEMRegistration model
+    'handles model scaling itself.
     Returns: (aligned_list, summed_image, shifts)
     """
 
@@ -57,8 +68,9 @@ def align_image_series(image_series, plot=False,host="192.168.51.3"):
     try:
         manager.scale(model_name="TEMRegistration")
     except Exception:
+        raise Exception("Registration model cannot be contacted")
         #if scaling does not work, end the alignment
-        pass
+        return
 
     for idx in tqdm(range(len(image_series)), desc="Aligning frames", unit="img"):
         moving = np.array(image_series[idx], dtype=np.float64, copy=False)
@@ -109,35 +121,43 @@ def align_image_series(image_series, plot=False,host="192.168.51.3"):
     return translated_list, summed_image, shifts
 
 
-def get_spot_positions(image,threshold=0,host="192.168.51.3"):
+def get_spot_positions(image,threshold=0,host="192.168.51.3",model_name="spot_segmentation"):
 
     try:
         manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
-                                        image_encoder='.tiff') #start server manager
-        manager.scale(model_name="spot_segmentation") #scale the server to have 2 processes
-        results = manager.infer(image=image, model_name='spot_segmentation')  # send image to spot detection
+                                        image_encoder='.tiff')  # start server manager
+        if not model_has_workers(model_name,host=host):
+            manager.scale(model_name=model_name) #scale the server to have 1 process
+
+        process_pre = time()
+        results = manager.infer(image=image, model_name=model_name)  # send image to spot detection
+        inference_time = time()-process_pre
+        print(f"Inference Time: {inference_time:3f}s")
         spots = results["objects"] #retrieve spot details
     except ConnectionError:
-        print("Could not connect to model, check the host and if there are available workers")
+        print("Could not connect to model, check the model is available")
+        return [],[]
     spot_list = [] #list for all spots
     areas = []
     spot_radii = []
-    fix,ax = plt.subplots(1,1)
+    fig,ax = plt.subplots(1,1)
     shape = image.shape
-    for i in range(len(spots)):
-        if spots[i]["mean_intensity"] > threshold:
-            spot_coords = spots[i]["center"] #spot center in fractions of image
+    for spot in spots:
+        if spot["mean_intensity"] > threshold:
+            spot_coords = spot["center"]
+            area = spot["area"]
+
             spot_list.append(spot_coords)
-            area = spots[i]["area"] #spot area in fractional dimensions
             areas.append(area)
-            radius = np.sqrt(area/np.pi)/shape[0] #calculate radius from area
+            radius = np.sqrt(area / np.pi) / shape[0]
             spot_radii.append(radius)
 
-    for i in range(len(spot_list)):
-        ax.plot(spot_list[i][0],spot_list[i][1],"r+") #plot spot center with red cross marker
-        spot_marker = Circle(xy=(spot_list[i][0],spot_list[i][1]),radius=spot_radii[i],color="yellow",fill=False)
+    ax.imshow(image, vmax=np.average(image * 10), extent=(0, 1, 1, 0), cmap="gray")
+
+    for coords, radius in zip(spot_list, spot_radii):
+        ax.plot(coords[0], coords[1], "r+")
+        spot_marker = Circle(xy=coords, radius=radius, color="yellow", fill=False)
         ax.add_patch(spot_marker)
-        plt.imshow(image,vmax=np.average(image*10),extent=(0,1,1,0),cmap="gray")
 
 
     plt.show(block=False)
@@ -169,7 +189,7 @@ def rotational_correction(raw_shift, fov_x, fov_y, theta_deg, y_down=True):
     return float(delta_deflector[0]), float(delta_deflector[1])
 
 
-def ML_drift_corrected_imaging(num_frames, pixel_time_us=None, num_pixels=None,host="192.168.51.3"): #TODO untested live
+def ML_drift_corrected_imaging(num_frames, pixel_time=1e-6, num_pixels=1024,host="192.168.51.3"): #TODO untested live
     """Parameters
     num_frames : integer number of frames to acquire (total, including the seed frame)
     pixel_time_us: pixel dwell time in microseconds; if None, read from UI
@@ -177,10 +197,6 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None, num_pixels=None,h
 
     Set the FOV and illumination conditions before calling; it uses current UI state.
     """
-
-    # --- Inputs / defaults ---------------------------------------------------
-    pixel_time = (window.scanning.pixel_time_spin.value() / 1e6) if (pixel_time_us is None) else (pixel_time_us / 1e6)
-    num_pixels = 1024 if (num_pixels is None) else int(num_pixels)
 
     images_list   = []   # list of dict frames: {"BF": np.ndarray|None, "HAADF": np.ndarray|None}
     image_offsets = []   # list of deflector shift dicts (logged before applying correction)
@@ -278,12 +294,15 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None, num_pixels=None,h
 
         # Registration input (current vs previous)
         reg_input = np.concatenate([curr_tracking, prev_tracking], axis=1)
+        pre_inference = time()
         registration = registration_model(
             reg_input,
             'TEMRegistration',
             host=host, port='7443',
             image_encoder='.tiff'
         )
+        post_inference = time()-pre_inference
+        print(f"Inference time: {post_inference:3f}s")
         raw_shift = registration[0]["translation"]  # normalized shift (dx_norm, dy_norm)
 
         # Convert image shift → deflector delta (θ applied here)
