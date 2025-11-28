@@ -11,15 +11,33 @@ import scipy.constants
 import matplotlib.colors as mcolors
 import random
 from rsciio.blockfile import file_writer
+import os
+import tifffile as tiff
 
 #from expert_pi.__main__ import window
 
-from expert_pi.__main__ import window #TODO something is not right with this on some older versions of expi
-from expert_pi import grpc_client
+from expert_pi.__main__ import window
+#from expert_pi import grpc_client
+from expert_pi.client import grpc_client #0.2.2
 from expert_pi.app import scan_helper
-from expert_pi.grpc_client.modules._common import DetectorType as DT
+#from expert_pi.grpc_client.modules._common import DetectorType as DT
+from expert_pi.grpc_client.enums import DetectorType as DT #0.2.2
 from expert_pi.app import app
 from expert_pi.gui import main_window
+
+#cache client is now binary client
+#app.api is grpc_client
+
+#scan helper is gone
+
+#acquisition is now set differently for camera and stem
+
+#acquisition now returns a reader, data = reader.get_frame()
+#for STEM the data is cached and can be read with get_frame
+#for camera use reader.get_pixels() or get_lines() lines is my current behaviour
+#data must be read from the reader, or the reader must be closed to flush the cache and allow next acquisition
+#using app.command is synched to UI, but app.api is not (old behaviour)
+
 
 window = main_window.MainWindow()
 controller = app.MainApp(window)
@@ -456,3 +474,56 @@ def dose_budget(budget_el_per_ang=10): #TODO untested
     min_FPS = 1/max_exposure_time_seconds
 
     return probe_dose_rate_angstroms,max_exposure_time_seconds,min_FPS
+
+
+def read_tiff_series(folder_path, sort=True, return_metadata=False):
+    """
+    Reads all TIFF images from a folder into a list of NumPy arrays.
+
+    Parameters
+    ----------
+    folder_path : str
+        Path to the folder containing TIFF images.
+    sort : bool, optional
+        If True (default), sorts files alphabetically before reading.
+    return_metadata : bool, optional
+        If True, returns a list of (image, metadata) tuples.
+        Otherwise, returns only image arrays.
+
+    Returns
+    -------
+    list of np.ndarray
+        List of 2D or 3D image arrays (depending on the data).
+        If return_metadata=True, returns list of (array, metadata) tuples.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the folder does not exist or contains no TIFF files.
+    """
+
+    if not os.path.isdir(folder_path):
+        raise FileNotFoundError(f"Folder not found: {folder_path}")
+
+    # Collect all .tif / .tiff files
+    tiff_files = [f for f in os.listdir(folder_path)
+                  if f.lower().endswith(('.tif', '.tiff'))]
+
+    if not tiff_files:
+        raise FileNotFoundError(f"No TIFF files found in {folder_path}")
+
+    if sort:
+        tiff_files.sort()
+
+    images = []
+    for filename in tiff_files:
+        path = os.path.join(folder_path, filename)
+        with tiff.TiffFile(path) as tif:
+            img = tif.asarray()
+            if return_metadata:
+                metadata = tif.imagej_metadata or tif.pages[0].tags
+                images.append((img, metadata))
+            else:
+                images.append(img)
+
+    return images
