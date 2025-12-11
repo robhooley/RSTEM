@@ -32,12 +32,7 @@ window = main_window.MainWindow()
 controller = app.MainApp(window)
 cache_client = controller.cache_client
 
-from expert_pi.RSTEM.utilities import generate_colorlist,generate_colormaps,collect_metadata
-
-host_F4 = ""
-host_P3 = "172.20.32.1" #TODO confirm
-host_P2 = ""
-host_global = '172.16.2.86'
+from expert_pi.RSTEM.utilities import generate_colourlist,generate_colourmaps,collect_metadata
 
 
 host = host_global

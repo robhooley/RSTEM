@@ -15,8 +15,10 @@ import fnmatch
 import matplotlib.colors as mcolors
 
 from expert_pi import grpc_client
+#from expert_pi.client import grpc_client #0.2.2
 from expert_pi.app import scan_helper
 from expert_pi.grpc_client.modules._common import DetectorType as DT, CondenserFocusType as CFT
+#from expert_pi.grpc_client.enums import DetectorType as DT, CondenserFocusType as CFT #0.2.2
 from serving_manager.api import TorchserveRestManager
 from expert_pi.app import app
 from expert_pi.gui import main_window
@@ -46,9 +48,9 @@ def scan_4D_basic(scan_width_px=128, camera_frequency_hz=4500, use_precession=Fa
         image_array has shape (scan_width_px, scan_width_px, camY, camX)
     """
     # Pre-checks memory & gathers metadata
-    sufficient_RAM = check_memory(camera_frequency_hz, scan_width_px)
-    if not sufficient_RAM:
-        print("This dataset might not fit into RAM")
+    #sufficient_RAM = check_memory(camera_frequency_hz, scan_width_px)
+    #if not sufficient_RAM:
+    #    print("This dataset might not fit into RAM")
 
     pixel_time = 1.0 / camera_frequency_hz  # compute once
     metadata = collect_metadata(
@@ -364,7 +366,7 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
         return int(val)
 
     if output_resolution is None and format != "NanoMEGAS Block":
-        choice = g.choicebox("Enter pattern output resolution","Output resolution",choices=["128", "256", "No Downscaling"])
+        choice = g.choicebox("Enter pattern output resolution","Output resolution",choices=["128", "256", "No Downscaling"],preselect=2)
         if choice is None:
             print("Save cancelled")
             return None
@@ -445,18 +447,18 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
             with open(pdat_path, "wb") as f:
                 p.dump(image_array, f)
         print("Pickling complete")
-    elif format == "NanoMEGAS Block":
-        if use_datetime_session:
-            blo_path = f"{base}{session_suffix}.blo"
-            metadata_path = f"{base}{session_suffix}_blo_metadata.json" if metadata is not None else None
-        else:
-            num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.blo'))
-            blo_path = f"{base}_{num_files_in_dir + 1}.blo"
-            metadata_path = (
-                os.path.join(directory, f"4D_STEM_{num_files_in_dir + 1}_blo_metadata.json")
-                if metadata is not None else None)
-        print(f"Saving as blo file {blo_path}")
-        array2blo(data=image_array, meta=metadata, filename=blo_path)
+    #elif format == "NanoMEGAS Block":
+    #    if use_datetime_session:
+    #        blo_path = f"{base}{session_suffix}.blo"
+    #        metadata_path = f"{base}{session_suffix}_blo_metadata.json" if metadata is not None else None
+    #    else:
+    #        num_files_in_dir = len(fnmatch.filter(os.listdir(directory), '*.blo'))
+    #        blo_path = f"{base}_{num_files_in_dir + 1}.blo"
+    #        metadata_path = (
+    #            os.path.join(directory, f"4D_STEM_{num_files_in_dir + 1}_blo_metadata.json")
+    #            if metadata is not None else None)
+    #    print(f"Saving as blo file {blo_path}")
+    #    array2blo(data=image_array, meta=metadata, filename=blo_path)
     if metadata is not None and metadata_path is not None:
         with open(metadata_path, "w", encoding="utf-8") as jf:
             json.dump(metadata, jf, indent=2)

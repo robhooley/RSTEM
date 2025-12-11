@@ -337,3 +337,87 @@ def ML_drift_corrected_imaging(num_frames, pixel_time=1e-6, num_pixels=1024,host
         results.append((aligned_HAADF_series,summed_HAADF))
 
     return results
+
+
+def align_image_series(image_series, plot=False,host="192.168.51.3",model="TEMRegistration"):
+    """
+    Align a list of 2D images to the first frame using the TEMRegistration model
+    'handles model scaling itself.
+    Returns: (aligned_list, summed_image, shifts)
+    """
+
+    if model=="TEMRegistration":
+        port = 7443
+    elif model == "TEMRoma" or "TEMRomaTiny":
+        port = 8080
+
+    if not isinstance(image_series, list) or len(image_series) == 0:
+        raise Exception("Dataset must be a non-empty list of images")
+
+    initial_image = np.array(image_series[0], dtype=np.float64, copy=False)
+    H, W = initial_image.shape
+    shifts = []
+    translated_list = []
+
+    # Self-contained TorchServe session (same model name)
+    manager = TorchserveRestManager(
+        inference_port='8080',
+        management_port='8081',
+        host=host,
+        image_encoder='.tiff'
+    )
+    # Safe to call repeatedly; if already scaled/loaded, server should no-op
+    try:
+        manager.scale(model_name=model)
+    except Exception:
+        raise Exception("Registration model cannot be contacted")
+        #if scaling does not work, end the alignment
+        return
+
+    for idx in tqdm(range(len(image_series)), desc="Aligning frames", unit="img"):
+        moving = np.array(image_series[idx], dtype=np.float64, copy=False)
+
+        # Side-by-side concat (H, 2W), matching registration model contract
+        reg_input = np.concatenate([initial_image, moving], axis=1)
+        registration_values = registration_model(
+            reg_input,
+            model,
+            host=host,
+            port=port,
+            image_encoder='.tiff'
+        )
+        # Expect [dx_norm, dy_norm] in [0..1]
+        dx_norm, dy_norm = registration_values[0]["translation"]
+        x_pixels_shift = dx_norm * H
+        y_pixels_shift = dy_norm * W
+        shifts.append((x_pixels_shift, y_pixels_shift))
+
+        M = np.float32([[1, 0, x_pixels_shift], [0, 1, y_pixels_shift]])
+        warped = cv2.warpAffine(
+            moving.astype(np.uint16, copy=False),
+            M,
+            (W, H),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0
+        )
+        translated_list.append(warped)
+
+    summed_image = np.sum(np.asarray(translated_list), axis=0, dtype=np.float64)
+
+    if plot:
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        fig.set_size_inches(15,5)
+        ax1.imshow(initial_image, cmap="gray")
+        ax1.title.set_text("Initial Image")
+        plt.setp(ax1, xticks=[], yticks=[])  # removes ticks
+        ax2.imshow(image_series[-1], cmap="gray")
+        ax2.title.set_text("Final Image")
+        plt.setp(ax2, xticks=[], yticks=[])  # removes ticks
+        ax3.imshow(summed_image, cmap="gray")
+        ax3.title.set_text(f"Summation of {len(image_series)+1} images")
+        plt.setp(ax3, xticks=[], yticks=[])  # removes ticks
+
+        plt.show()
+
+    return translated_list, summed_image, shifts

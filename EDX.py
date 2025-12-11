@@ -1,10 +1,6 @@
 import os
-import threading
-
 from expert_pi.measurements import shift_measurements
-#from PyQt5.QtWidgets import QApplication
 import pickle
-from time import sleep
 import numpy as np
 import easygui as g
 import cv2 as cv2
@@ -17,12 +13,16 @@ import scipy.signal
 import matplotlib.pyplot as plt
 from grid_strategy import strategies
 from PIL import Image
-from serving_manager.api import registration_model
+#from serving_manager.api import registration_model
+from skimage.restoration import denoise_nl_means, estimate_sigma
+from skimage.util import img_as_float32
+import hyperspy.api as hs
+import numpy as np
+from serving_manager.tem_models.specific_model_functions import registration_model
 
-#from expert_pi.__main__ import window #TODO something is not right with this on some older versions of expi
 from expert_pi import grpc_client
 from expert_pi.app import scan_helper
-from expert_pi.grpc_client.modules._common import DetectorType as DT, CondenserFocusType as CFT,RoiMode as RM
+from expert_pi.grpc_client.modules._common import DetectorType as DT,XrayFilterType as XFT
 from serving_manager.api import TorchserveRestManager
 from expert_pi.app import app
 from expert_pi.gui import main_window
@@ -37,17 +37,12 @@ from expert_pi.measurements import edx_processing
 #window = main_window.MainWindow()
 #controller = main_controller.MainController(window)
 
-from expert_pi.RSTEM.utilities import generate_colorlist,generate_colormaps
+from expert_pi.RSTEM.utilities import generate_colourlist,generate_colourmaps
 
 
-host_global = '172.16.2.86'
+host = "192.168.51.3"
 
-
-host = host_global
-
-#TODO untested
-#TODO check reasonable map sizes with RAM usage (1000x1000 maps for 1000 scans)
-
+#TODO update to ML with scan rotation
 def acquire_EDX_map(frames=10,pixel_time=10e-6,fov=None,scan_rotation=0,num_pixels=512,drift_correction_method="patches",verbose_logging=False,precession=False):
     """Parameters
     frames: number of scans
@@ -279,7 +274,7 @@ def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None,post
         names_list.append(name)
 
     specs = strategies.SquareStrategy("center").get_grid(num_maps)
-    color_maps = generate_colormaps(num_maps,mode=mode)
+    color_maps = generate_colourmaps(num_maps, mode=mode)
 
     for i,subplot in enumerate(specs):
         plt.subplot(subplot)
@@ -354,7 +349,7 @@ def produce_spectrum(map_data=None,elements=None,normalise=False):
     if elements is not None:
         lines = get_xray_lines(elements=elements)#,lines=['Ka1','La1',"Ma"])
         #print(lines)
-        colors = generate_colorlist(len(lines))
+        colors = generate_colourlist(len(lines))
         i=0
         for name,line in zip(lines.keys(),lines.values()):
             energy = line
@@ -414,3 +409,341 @@ def get_xray_lines(elements=[],intensity_threshold=0.05):
         line_tuple_list.append((line_family_list[item],family_energy_list[item]))
 
     return line_dictionary
+
+def integrate_energy_window(signal, energy_lower, energy_higher):
+    """
+    Integrate a HyperSpy 2D signal within a given energy window.
+
+    Parameters
+    ----------
+    signal : hyperspy.signal.Signal1D or hyperspy.signal.Signal2D
+        HyperSpy signal with an energy axis (e.g., EELS spectrum image).
+        Typically has dimensions (ny, nx, E) where E is the energy-loss axis.
+    energy_lower : float
+        Lower bound of the energy window (in same units as signal.axes_manager).
+    e_high : float
+        Upper bound of the energy window.
+    average : bool, optional
+        If True, return the *mean* intensity over the window instead of the sum.
+
+    Returns
+    -------
+    map2d : numpy.ndarray
+        2D array (ny × nx) of integrated intensity within the specified window.
+
+    Raises
+    ------
+    ValueError
+        If energy window lies outside the signal’s energy range.
+    """
+
+    # --- Validate signal type ---
+    if not hasattr(signal, "axes_manager"):
+        raise TypeError("Input must be a HyperSpy/Exspy Signal with an axes_manager.")
+
+    # --- Identify energy axis ---
+    energy_axis = signal.axes_manager.signal_axes[0]
+    energies = energy_axis.axis
+
+    # --- Check bounds ---
+    if energy_lower < energies.min() or energy_higher > energies.max():
+        raise ValueError(
+            f"Energy window ({energy_lower}, {energy_higher}) is outside signal range "
+            f"({energies.min()}, {energies.max()})."
+        )
+
+    # --- Select slice within energy range ---
+    mask = (energies >= energy_lower) & (energies <= energy_higher)
+    if not np.any(mask):
+        raise ValueError("No data points within specified energy window.")
+
+    # --- Extract subset of the signal ---
+    sub_signal = signal.isig[energy_lower:energy_higher]
+
+    # --- Integrate or average ---
+    data = sub_signal.data  # shape: (ny, nx, nE)
+    map2d = data.sum(axis=-1)
+
+    return map2d
+
+
+
+def summed_spectrum_from_coords(signal, coords, average=False):
+    """
+    Extract and sum spectra from a list of (y, x) coordinates in a 2D HyperSpy signal.
+
+    Parameters
+    ----------
+    signal : hyperspy.signal.Signal
+        A 2D spectrum image, typically shape (ny, nx, E).
+    coords : list of tuple(int, int)
+        List of coordinates as (y, x) pairs. Index order matches signal.data.
+    average : bool, optional
+        If True, return the *mean* spectrum instead of the sum.
+
+    Returns
+    -------
+    summed_spectrum : hyperspy.signals.Signal1D
+        Summed (or averaged) spectrum as a HyperSpy Signal1D object, preserving
+        the original spectral axis calibration and metadata.
+
+    Raises
+    ------
+    ValueError
+        If any coordinate is out of bounds or if no coordinates are given.
+    """
+
+    # --- Validate ---
+    if not hasattr(signal, "axes_manager"):
+        raise TypeError("Input must be a HyperSpy Signal object.")
+
+    if not coords or len(coords) == 0:
+        raise ValueError("You must provide at least one coordinate.")
+
+    ny, nx = signal.data.shape[:2]
+    for (y, x) in coords:
+        if not (0 <= y < ny and 0 <= x < nx):
+            raise ValueError(f"Coordinate {(y, x)} is out of bounds for shape {(ny, nx)}")
+
+    # --- Extract individual spectra and sum ---
+    spectra = [signal.inav[y, x] for (y, x) in coords]
+
+    # Stack into a Signal1D object
+    stacked = hs.stack(spectra, axis=0)  # shape: (N, E)
+
+    # Sum or average
+    summed_data = stacked.data.sum(axis=0) if not average else stacked.data.mean(axis=0)
+
+    # --- Construct new Signal1D preserving axis calibration ---
+    summed_spectrum = hs.signals.Signal1D(
+        summed_data,
+        axes=[signal.axes_manager.signal_axes[0].copy()]
+    )
+
+    # Copy essential metadata (so energy calibration etc. stays correct)
+    summed_spectrum.metadata = signal.metadata.deepcopy()
+
+    return summed_spectrum
+
+def post_align_EDX_series(image_series,map_list, plot=True,model="TEMRomaTiny",host="192.168.51.3",measured_shifts=None,port=8080):
+
+    #TODO handle dictionary of multiple maps with element labels
+    #TODO test passing previous shifts in to skip inference
+    #TODO add in catch so if registration fails it skips the image and does not warp it or the maps
+
+    """
+    Align a list of EDX maps based on the simultaneously acquired STEM images
+     Works from the first frame using the TEMRegistration model
+    'handles model scaling itself.
+
+    Returns: (aligned_list, summed_image, shifts)
+    """
+
+    if not isinstance(image_series, list) or len(image_series) == 0:
+        raise Exception("Dataset must be a non-empty list of images")
+
+    initial_image = np.array(image_series[0], dtype=np.float64, copy=False)
+    H, W = initial_image.shape
+    shifts = []
+    translated_list = []
+    translated_map_list = []
+
+    # Self-contained TorchServe session (same model name)
+    if measured_shifts is None: #do inference
+        manager = TorchserveRestManager(
+            inference_port='8080',
+            management_port='8081',
+            host=host,
+            image_encoder='.tiff'
+        )
+        # Safe to call repeatedly; if already scaled/loaded, server should no-op
+        try:
+            manager.scale(model_name=model)
+        except Exception:
+            raise Exception(f"{model} model cannot be contacted")
+            #if scaling does not work, end the alignment
+            return
+
+    for idx in tqdm(range(len(image_series)), desc="Aligning frames", unit="img"):
+        if measured_shifts is None:
+            translated_image = np.array(image_series[idx], dtype=np.float64, copy=False)
+
+            translated_map = np.array(map_list[idx], dtype=np.float64, copy=False)
+
+            # Side-by-side concat (H, 2W)
+            reg_input = np.concatenate([initial_image, translated_image], axis=1)
+            registration_values = registration_model(
+                reg_input,
+                model,
+                host=host,
+                port=port,
+                image_encoder='.tiff'
+            )
+            # Expect [dx_norm, dy_norm] in [0..1]
+            dx_norm, dy_norm = registration_values[0]["translation"]
+            homography = registration_values[0]["homography_fine"]
+
+            x_pixels_shift = dx_norm * H
+            y_pixels_shift = dy_norm * W
+            shifts.append((x_pixels_shift, y_pixels_shift))
+
+            M = np.float32(homography)
+            warped_STEM = cv2.warpPerspective(
+                translated_image.astype(np.uint16, copy=False),M,(W, H),flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,borderValue=0)
+            translated_list.append(warped_STEM)
+
+            warped_map = cv2.warpPerspective(
+                translated_map.astype(np.uint16, copy=False),
+                M,
+                (W, H),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0
+            )
+
+        if measured_shifts:
+            x_pixels_shift = measured_shifts[idx][0]
+            y_pixels_shift = measured_shifts[idx][0]
+
+            print("X",x_pixels_shift,"Y",y_pixels_shift)
+
+
+            M = np.float32([[1, 0, x_pixels_shift], [0, 1, y_pixels_shift]])
+
+            warped_STEM = cv2.warpAffine(
+                translated_image.astype(np.uint16, copy=False),
+                M,
+                (W, H),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0
+            )
+            translated_list.append(warped_STEM)
+
+            warped_map = cv2.warpAffine(
+                translated_map.astype(np.uint16, copy=False),
+                M,
+                (W, H),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0
+            )
+
+        translated_list.append(warped_STEM)
+        translated_map_list.append(warped_map)
+
+    summed_map = np.sum(np.asarray(translated_map_list), axis=0, dtype=np.float64)
+    summed_image = np.sum(np.asarray(translated_list), axis=0, dtype=np.float64)
+
+    if plot:
+        fig, axs = plt.subplots(2, 2, figsize=(10, 10))
+        ax1, ax2, ax3, ax4 = axs.ravel()
+        ax1.imshow(initial_image, cmap="gray")
+        ax1.title.set_text("Initial Image")
+        plt.setp(ax1, xticks=[], yticks=[])  # removes ticks
+        ax2.imshow(summed_image, cmap="gray")
+        ax2.title.set_text(f"Summed Image from {len(image_series)} frames")
+        plt.setp(ax2, xticks=[], yticks=[])  # removes ticks
+        ax3.imshow(map_list[0], cmap="gray")
+        ax3.title.set_text(f"One map frame")
+        plt.setp(ax3, xticks=[], yticks=[])  # removes ticks
+        ax4.imshow(summed_map, cmap="gray")
+        ax4.title.set_text(f"Map from summation of {len(image_series)} frames")
+        plt.setp(ax4, xticks=[], yticks=[])  # removes ticks
+
+        plt.show()
+
+    return [translated_list,translated_map_list, summed_map,summed_image,shifts]
+
+
+
+def non_local_means_filter(
+    image,
+    patch_size=7,
+    patch_distance=11,
+    h=None,
+    sigma=None,
+    fast_mode=True,
+    preserve_range=True,
+    ):
+    """
+    Apply Non-Local Means (NLM) denoising to a 2D (grayscale) or 3D (color) image.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        2D grayscale (H, W) or 3D color (H, W, C) image.
+    patch_size : int, optional
+        Size of patches used for denoising (odd). Typical: 5–7.
+    patch_distance : int, optional
+        Maximal distance in pixels to search similar patches. Typical: 7–15.
+    h : float or sequence, optional
+        Filtering strength. If None, it will be set from `sigma`.
+        Higher = stronger smoothing. For color, can be (h_ch1, h_ch2, ...).
+    sigma : float or sequence, optional
+        Estimated noise standard deviation. If None, auto-estimated.
+    fast_mode : bool, optional
+        If True, use the fast approximate algorithm (big speedup, similar quality).
+    preserve_range : bool, optional
+        If True, do not rescale image intensity to [0, 1] internally.
+
+    Returns
+    -------
+    denoised : np.ndarray
+        Denoised image, same shape as input, dtype float32.
+
+    Notes
+    -----
+    - For best results, give a reasonable `sigma` (noise std) or let it auto-estimate.
+    - `h` is typically ~0.8–1.2 * sigma (grayscale). For color, scikit-image accepts a tuple.
+    """
+    try:
+        from skimage.restoration import denoise_nl_means, estimate_sigma
+        from skimage.util import img_as_float32
+    except ImportError as e:
+        raise ImportError(
+            "scikit-image is required for this function. Install with `pip install scikit-image`."
+        ) from e
+
+    img = img_as_float32(image)  # keeps range if preserve_range=True below
+
+    multichannel = (img.ndim == 3 and img.shape[-1] in (3, 4))
+
+    # Noise estimate per-channel if not provided
+    if sigma is None:
+        sigma = estimate_sigma(img, channel_axis=-1 if multichannel else None, average_sigmas=not multichannel)
+        # scikit-image <=0.20 used `multichannel`; >=0.21 uses `channel_axis`.
+
+    # If h not provided, set relative to sigma
+    if h is None:
+        # If per-channel sigma array, scale each; else single float
+        if np.isscalar(sigma):
+            h = 1.0 * float(sigma)
+        else:
+            h = 1.0 * np.asarray(sigma, dtype=np.float32)
+
+    # Call denoise_nl_means with compatibility for skimage >=0.21 (channel_axis)
+    try:
+        denoised = denoise_nl_means(
+            img,
+            patch_size=patch_size,
+            patch_distance=patch_distance,
+            h=h,
+            fast_mode=fast_mode,
+            preserve_range=preserve_range,
+            channel_axis=-1 if multichannel else None,
+        )
+    except TypeError:
+        # Fallback for older scikit-image that used `multichannel`
+        denoised = denoise_nl_means(
+            img,
+            patch_size=patch_size,
+            patch_distance=patch_distance,
+            h=h,
+            fast_mode=fast_mode,
+            preserve_range=preserve_range,
+            multichannel=multichannel,
+        )
+
+    return denoised.astype(np.float32)

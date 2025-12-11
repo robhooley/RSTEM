@@ -15,7 +15,6 @@ window = main_window.MainWindow()
 controller = app.MainApp(window)
 cache_client = controller.cache_client
 
-#from stem_measurements import shift_measurements
 from tqdm import tqdm
 import numpy as np
 from time import sleep
@@ -25,12 +24,9 @@ import fnmatch
 import os
 import json
 
-from serving_manager.api import registration_model
-from serving_manager.api import super_resolution_model
-from serving_manager.api import TorchserveRestManager
+from serving_manager.tem_models.specific_model_functions import registration_model
+from serving_manager.management.torchserve_rest_manager import TorchserveRestManager
 
-
-from expert_pi.RSTEM.utilities import get_microscope_parameters
 #registration_model(np.concatenate([original_image,translated_image],axis=1, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
 #registration_model(image, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
 #super_resolution_model(image=image, model_name='SwinIRImageDenoiser', host='172.19.1.16', port='7447') #for denoising
@@ -38,11 +34,7 @@ from expert_pi.RSTEM.utilities import get_microscope_parameters
 #manager.infer(image=image, model_name='spot_segmentation') #spot detection
 #manager.list_models()
 
-host_F2 = "172.23.158.142"
-host_F4 = "192.168.51.3"
-host_P3 = "172.20.32.1" #TODO confirm
-host_P2 = "172.25.15.0"
-host_global = '172.16.2.86'
+host_client = "192.168.51.3"
 host_local = "172.27.153.166"
 
 host = host_local
@@ -429,33 +421,14 @@ def align_series_ML(image_series): #single series in a list
     summed_image = np.sum(summing_array, 0, dtype=np.float64)
     return translated_list,summed_image,shifts
 
-"""def align_series_cross_correlation(image_series):
-    initial_image = image_series[0]
-    initial_image_shape = initial_image.shape
-    fov_px = initial_image_shape[0]
-    offsets = []
-    correlation_coefficients = []
-    translated_list = []
-    for image in tqdm(range(len(image_series))):
-        offset,coeffs = get_offset_of_pictures(initial_image,image_series[image],fov=fov_px,get_corr_coeff=True) #TODO remove STEM measurements function and use OpenCV instead
-        offsets.append(offset)
-        correlation_coefficients.append(coeffs)
-        x_pixels_shift = offset[0]
-        y_pixels_shift = offset[1]
-        shift_matrix = np.float32([[1,0,x_pixels_shift],[0,1,y_pixels_shift]])
-        translated_image = cv2.warpAffine(image_series[image].astype(np.uint16),shift_matrix,(initial_image_shape[1],initial_image_shape[0]))
-        translated_list.append(translated_image)
-
-    return translated_list,offsets,correlation_coefficients
-"""
-
 def get_number_of_nav_pixels():
     scan_field_pixels = window.scanning.size_combo.currentText()
-    pixels = int(scan_field_pixels.replace(" px", ""))
+    pixels = int(scan_field_pixels.replace(" px", "")) #replace px with nothing, set as integer
     return pixels
 
-def get_pixel_positions_pointer(): #this doesnt work when imported as a function, but why
-    fov = window.scanning.fov_spin.value() #in microns
+def get_pixel_positions_pointer():
+    #TODO this doesnt work when imported as a function, probably threading related
+    fov = 20#grpc_client.scanning.get_field_width()*1e6
     print("FOV",fov)
     pixels = get_number_of_nav_pixels()
     print("Pixels",pixels)
