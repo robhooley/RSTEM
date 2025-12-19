@@ -1,19 +1,4 @@
-import matplotlib.pyplot as plt
-
-from expert_pi.__main__ import window #TODO something is not right with this on some older versions of expi
-from expert_pi import grpc_client
-from expert_pi.app import scan_helper
-from expert_pi.grpc_client.modules._common import DetectorType as DT, CondenserFocusType as CFT,RoiMode as RM
-from serving_manager.api import TorchserveRestManager
-from expert_pi.app import app
-from expert_pi.gui import main_window
-from grid_strategy import strategies
-
 from expert_pi.RSTEM.utilities import collect_metadata
-
-window = main_window.MainWindow()
-controller = app.MainApp(window)
-cache_client = controller.cache_client
 
 from tqdm import tqdm
 import numpy as np
@@ -23,22 +8,15 @@ import cv2 as cv2
 import fnmatch
 import os
 import json
+import matplotlib.pyplot as plt
+from grid_strategy import strategies
 
 from serving_manager.tem_models.specific_model_functions import registration_model
 from serving_manager.management.torchserve_rest_manager import TorchserveRestManager
 
-#registration_model(np.concatenate([original_image,translated_image],axis=1, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
-#registration_model(image, 'TEMRegistration', host='172.16.2.86', port='7443', image_encoder='.png') #TIFF is also ok
-#super_resolution_model(image=image, model_name='SwinIRImageDenoiser', host='172.19.1.16', port='7447') #for denoising
-#manager = TorchserveRestManager(inference_port='8080', management_port='8081', host='172.16.2.86', image_encoder='.tiff')
-#manager.infer(image=image, model_name='spot_segmentation') #spot detection
-#manager.list_models()
+from expertpi.api import DetectorType as DT, RoiMode as RM, CondenserFocusType as CFT
 
-host_client = "192.168.51.3"
-host_local = "172.27.153.166"
-
-host = host_local
-
+from RSTEM.app_context import get_app
 
 def normalize_to_8bit(image):
     """
@@ -51,7 +29,7 @@ def normalize_to_8bit(image):
     normalized = (255 * (clipped_image - image_min) / (image_max - image_min)).astype(np.uint8)
     return normalized
 
-#refactored to 0.1.0
+#refactored to 0.5.1
 def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pixel_time=5e-6):
     """Parameters
     extent_nm: Range the focal series should cover split equally around the current focus value
@@ -67,7 +45,9 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pi
     else:
         pass
 
-    current_defocus = grpc_client.illumination.get_condenser_defocus(CFT.C3)
+    app=get_app()
+
+    current_defocus = app.api.illumination.get_condenser_defocus(CFT.C3)
     lower_defocus = current_defocus-(extent_nm*1e-9/2)
     higher_defocus = current_defocus+(extent_nm*1e-9/2)
     defocus_intervals = np.linspace(lower_defocus,higher_defocus,steps)
@@ -75,36 +55,35 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pi
     image_series = []
     defocus_offsets = []
 
-    if grpc_client.stem_detector.get_is_inserted(DT.BF) is False and grpc_client.stem_detector.get_is_inserted(
-            DT.HAADF) is False:
-        grpc_client.projection.set_is_off_axis_stem_enabled(True)
+    if app.api.stem_detector.get_is_inserted(DT.BF) is False and app.api.stem_detector.get_is_inserted(DT.HAADF) is False:
+        app.scanning.set_off_axis(True)
 
     print("Acquiring defocus series")
     for i in tqdm(defocus_intervals,unit="Frame"):
 
-        grpc_client.illumination.set_condenser_defocus(i,CFT.C3) #get correct command
-        defocus_now = grpc_client.illumination.get_condenser_defocus(CFT.C3)
+        app.api.illumination.set_condenser_defocus(i,CFT.C3) #get correct command
+        defocus_now = app.api.illumination.get_condenser_defocus(CFT.C3)
 
         defocus_offset = current_defocus-defocus_now #this will be in meters
         defocus_offset_nm = defocus_offset*1e9
         defocus_offsets.append(np.round(defocus_offset_nm,decimals=1))
 
-        scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1,
+        scan = app.acquisition.acquire_stem(pixel_time=pixel_time, total_size=num_pixels, frames=1,
                                                    detectors=(DT.BF,DT.HAADF))
-        header, data = cache_client.get_item(scan_id, num_pixels**2)  # retrive small measurements in one chunk
+        image = scan.get_all()
 
         if BF==True and ADF==False:
-            BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
+            BF_image = image["BF"][0]
             image_series.append(BF_image)
         if ADF==True and BF == False:
-            ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
+            ADF_image = image["HAADF"][0]
             image_series.append(ADF_image)
         if BF == True and ADF == True:
-            BF_image = data["stemData"]["BF"].reshape(num_pixels, num_pixels)
-            ADF_image = data["stemData"]["HAADF"].reshape(num_pixels, num_pixels)
+            BF_image = image["BF"][0]
+            ADF_image = image["HAADF"][0]
             image_series.append((BF_image,ADF_image))
 
-    grpc_client.illumination.set_condenser_defocus(current_defocus, CFT.C3)
+    app.api.illumination.set_condenser_defocus(current_defocus, CFT.C3)
 
     specs = strategies.SquareStrategy("center").get_grid(len(image_series))
 
@@ -126,7 +105,7 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pi
     plt.show(block=False)
     return image_series,defocus_offsets
 
-#refactored to 0.1.0
+#TODO REFACTOR
 def acquire_FOV_series(scale,steps=11,num_pixels=1024,pixel_time=5e-6):
     """Parameters
     extent_nm: Range the focal series should cover split equally around the current focus value
@@ -186,7 +165,7 @@ def acquire_FOV_series(scale,steps=11,num_pixels=1024,pixel_time=5e-6):
     plt.show(block=False)
     return image_series,fovs
 
-#refactored 0.1.0
+#TODO REFACTOR
 def acquire_STEM(fov_um=None,pixel_time=5e-6,num_pixels=1024,scan_rotation_deg=None):
     """Acquires a single STEM image from the inserted detectors
     returns a tuple with the images and the metadata in a dictionary
@@ -248,7 +227,7 @@ def save_STEM(image,metadata=None,name=None,folder=None):
         json.dump(metadata, open_json, indent=6)
         open_json.close()
 
-#tested ok 0.1.0
+#TODO REFACTOR
 #TODO reintroduce scan rotation
 def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None):
     """Parameters
@@ -311,6 +290,7 @@ def ML_drift_corrected_imaging(num_frames, pixel_time_us=None,num_pixels=None):
 
     return (aligned_BF_series,summed_BF), (aligned_ADF_series, summed_ADF)
 
+#TODO REFACTOR
 def acquire_series(num_frames, pixel_time_us=None,num_pixels=None ):
     if pixel_time_us == None:
         pixel_time = window.scanning.pixel_time_spin.value()/1e6
@@ -338,6 +318,7 @@ def acquire_series(num_frames, pixel_time_us=None,num_pixels=None ):
 
 
 # tested ok without scan rotation
+#TODO REFACTOR
 #TODO untested
 def ML_drift_corrected_imaging_with_scan_rotation(num_frames, pixel_time=None, num_pixels=None, scan_rotation=0):
     R = np.array([[np.cos(scan_rotation), np.sin(scan_rotation)],
@@ -421,24 +402,7 @@ def align_series_ML(image_series): #single series in a list
     summed_image = np.sum(summing_array, 0, dtype=np.float64)
     return translated_list,summed_image,shifts
 
-def get_number_of_nav_pixels():
-    scan_field_pixels = window.scanning.size_combo.currentText()
-    pixels = int(scan_field_pixels.replace(" px", "")) #replace px with nothing, set as integer
-    return pixels
-
-def get_pixel_positions_pointer():
-    #TODO this doesnt work when imported as a function, probably threading related
-    fov = 20#grpc_client.scanning.get_field_width()*1e6
-    print("FOV",fov)
-    pixels = get_number_of_nav_pixels()
-    print("Pixels",pixels)
-    posx = window.image_view.tools["point_selector"].x()
-    posy = window.image_view.tools["point_selector"].y()
-    print("posX",posx,"posX",posy)
-    pixel_coords = [int(posy / fov * pixels + 0.5) + pixels // 2, int(posx / fov * pixels + 0.5) + pixels // 2]
-    print("pixel coords",pixel_coords)
-    return pixel_coords
-
+#TODO REFACTOR
 def start_point_acquisition(pixel_offsets,dwell_time=None):
 
     N=1

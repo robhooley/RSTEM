@@ -14,22 +14,17 @@ from matplotlib.path import Path as matpath
 import fnmatch
 import matplotlib.colors as mcolors
 
-from expert_pi import grpc_client
-#from expert_pi.client import grpc_client #0.2.2
-from expert_pi.app import scan_helper
-from expert_pi.grpc_client.modules._common import DetectorType as DT, CondenserFocusType as CFT
-#from expert_pi.grpc_client.enums import DetectorType as DT, CondenserFocusType as CFT #0.2.2
+from expertpi import api
+
+from expertpi.api import DetectorType as DT, RoiMode as RM
+
 from serving_manager.api import TorchserveRestManager
-from expert_pi.app import app
-from expert_pi.gui import main_window
-
-window = main_window.MainWindow()
-controller = app.MainApp(window)
-cache_client = controller.cache_client
-
+from RSTEM.app_context import get_app
 #comment this out depending on where the script is located
-from expert_pi.RSTEM.utilities import create_circular_mask,check_memory,collect_metadata,downsample_diffraction,array2blo #utilities file in RSTEM directory
+#from RSTEM.utilities import create_circular_mask,check_memory,collect_metadata,downsample_diffraction,array2blo #utilities file in RSTEM directory
 #from utilities import create_circular_mask,check_memory,collect_metadata,downsample_diffraction,array2blo
+
+
 
 def scan_4D_basic(scan_width_px=128, camera_frequency_hz=4500, use_precession=False):
     """
@@ -47,55 +42,59 @@ def scan_4D_basic(scan_width_px=128, camera_frequency_hz=4500, use_precession=Fa
     (image_array, metadata) : tuple
         image_array has shape (scan_width_px, scan_width_px, camY, camX)
     """
-    # Pre-checks memory & gathers metadata
-    #sufficient_RAM = check_memory(camera_frequency_hz, scan_width_px)
-    #if not sufficient_RAM:
-    #    print("This dataset might not fit into RAM")
+
+    """from expertpi.application import app_state
+    #unlock the state if acquisition fails
+    app_state.AcqLock.unlock()"""
+
+    app = get_app()
 
     pixel_time = 1.0 / camera_frequency_hz  # compute once
-    metadata = collect_metadata(
-        acquisition_type="Camera",
-        scan_width_px=scan_width_px,
-        use_precession=use_precession,
-        pixel_time=pixel_time,
-        scan_rotation=0,
-        edx_enabled=False
-    )
+
+    #metadata = collect_metadata(
+    #    acquisition_type="Camera",
+    #    scan_width_px=scan_width_px,
+    #    use_precession=use_precession,
+    #    pixel_time=pixel_time,
+    #    scan_rotation=0,
+    #    edx_enabled=False
+    #)
     # Ensure STEM detectors are retracted and beam is on axis
-    bf_in = grpc_client.stem_detector.get_is_inserted(DT.BF)
-    haadf_in = grpc_client.stem_detector.get_is_inserted(DT.HAADF)
+    bf_in = app.api.stem_detector.get_is_inserted(DT.BF)
+    haadf_in = app.api.stem_detector.get_is_inserted(DT.HAADF)
     if bf_in or haadf_in:
         if bf_in:
-            grpc_client.stem_detector.set_is_inserted(DT.BF, False)
+            app.detectors.stem.insert_bf(False)
         if haadf_in:
-            grpc_client.stem_detector.set_is_inserted(DT.HAADF, False)
+            app.detectors.stem.insert_df(False)
         for _ in tqdm(range(5), desc="Stabilising after STEM detector retraction", unit=""):
             sleep(1)
-    grpc_client.projection.set_is_off_axis_stem_enabled(False)
+    app.scanning.set_off_axis(False)
     sleep(0.2)  # stabilisation after deflector change
 
-    # Start scan
-    scan_id = scan_helper.start_rectangle_scan(pixel_time=np.round(pixel_time, 8),total_size=scan_width_px,
-        frames=1,detectors=[DT.Camera],is_precession_enabled=use_precession)
+    reader = app.acquisition.acquire_camera(pixel_time=np.round(pixel_time,8),total_size=scan_width_px,precession_enabled=use_precession)
+
+
+
     print(f"Acquiring {scan_width_px} x {scan_width_px} px dataset at {camera_frequency_hz} fps")
     #Retrieve first row to infer dtype/shape, then pre-allocate array
-    _, first_row = cache_client.get_item(scan_id, scan_width_px)
-    row_block = first_row["cameraData"]  # shape: (scan_width_px, camY, camX)
-    if row_block.ndim != 3 or row_block.shape[0] != scan_width_px:
+    first_row = reader.get_lines(1)
+    row_block = first_row.camera # shape: (scan_width_px, camY, camX)
+    if row_block.ndim != 4 or row_block.shape[1] != scan_width_px:
         raise RuntimeError(f"Unexpected cameraData shape: {row_block.shape}")
-    camY, camX = row_block.shape[1], row_block.shape[2] #read camera size from first row of data
+    camY, camX = row_block.shape[2], row_block.shape[3] #read camera size from first row of data
     dtype = row_block.dtype  # keep native dtype to avoid copies/conversions
     image_array = np.empty((scan_width_px, scan_width_px, camY, camX), dtype=dtype, order="C") #Pre-allocate target 4D array: (scanY, scanX, camY, camX)
     #Assign the first row (index 0) directly
     image_array[0, :, :, :] = row_block  # vectorized write
     #Retrieve remaining rows
     for i in tqdm(range(1, scan_width_px), desc="Retrieving data from cache", total=scan_width_px - 1, unit="rows"):
-        _, data = cache_client.get_item(scan_id, scan_width_px)
-        row_block = data["cameraData"]  # expected shape: (scan_width_px, camY, camX)
+        data = reader.get_lines(1)
+        row_block = data.camera  # expected shape: (scan_width_px, camY, camX)
         image_array[i, :, :, :] = row_block #assert row_block.shape == (scan_width_px, camY, camX)
-
+    reader.close()
     print("Array ready")
-    return image_array, metadata
+    return image_array#, metadata
 
 
 def selected_area_diffraction(data_array):
