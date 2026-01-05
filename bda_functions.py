@@ -1,6 +1,7 @@
 import numpy as np
 from time import sleep
 from tqdm import tqdm
+
 from expert_pi.__main__ import window #TODO something is not right with this on some older versions of expi
 from expert_pi import grpc_client
 from expert_pi.app import scan_helper
@@ -12,7 +13,7 @@ window = main_window.MainWindow()
 controller = app.MainApp(window)
 cache_client = controller.cache_client
 import scipy
-from expert_pi.RSTEM.utilities import get_microscope_parameters
+from utilities import get_microscope_parameters
 
 def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose_fom_ui
     """Returns a dictionary contaning the calculated dose for the probe size and the pixel size in several units

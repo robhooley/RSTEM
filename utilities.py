@@ -13,17 +13,25 @@ import random
 from rsciio.blockfile import file_writer
 import os
 import tifffile as tiff
+from time import time
+import matplotlib.pyplot as plt
 
 #from expert_pi.__main__ import window
 
-from expert_pi.__main__ import window
+#from expert_pi.__main__ import window
 #from expert_pi import grpc_client
-from expert_pi.client import grpc_client #0.2.2
-from expert_pi.app import scan_helper
+#from expert_pi.client import grpc_client #0.2.2
+#from expert_pi.app import scan_helper
 #from expert_pi.grpc_client.modules._common import DetectorType as DT
-from expert_pi.grpc_client.enums import DetectorType as DT #0.2.2
-from expert_pi.app import app
-from expert_pi.gui import main_window
+#from expert_pi.grpc_client.enums import DetectorType as DT #0.2.2
+#from expert_pi.app import app
+#from expert_pi.gui import main_window
+
+from expertpi.api import DetectorType as DT, RoiMode as RM, CondenserFocusType as CFT
+from serving_manager.tem_models.specific_model_functions import registration_model
+from serving_manager.management.torchserve_rest_manager import TorchserveRestManager
+from expertpi.config import Config
+from RSTEM.app_context import get_app
 
 #cache client is now binary client
 #app.api is grpc_client
@@ -39,9 +47,8 @@ from expert_pi.gui import main_window
 #using app.command is synched to UI, but app.api is not (old behaviour)
 
 
-window = main_window.MainWindow()
-controller = app.MainApp(window)
-cache_client = controller.cache_client
+#config = Config()
+config = Config(r"C:\Users\stem\Documents\Rob_coding\ExpertPI-0.5.1\config.yml") # path to config file if changes have been made, otherwise comment out and use default
 
 
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None):
@@ -54,7 +61,8 @@ def create_circular_mask(image_height, image_width, mask_center_coordinates=None
     mask = dist_from_center <= mask_radius
     return mask
 
-def spot_radius_in_px(data_array):
+
+def spot_radius_in_px(data_array): #TODO refactor to be smarter
     """Takes a data array and works out the diffraction spot radius in pixels from the metadata"""
     if type(data_array) is tuple: #checks for metadata dictionary
         image_array = data_array[0] #splits the tuple to image array and metadata dictionary
@@ -73,11 +81,6 @@ def spot_radius_in_px(data_array):
         pixel_radius = 10
 
     return pixel_radius
-
-def get_number_of_nav_pixels(): #checked ok
-    scan_field_pixels = window.scanning.size_combo.currentText() #gets the string of number of pixels from the UI (messy)
-    pixels = int(scan_field_pixels.replace(" px", "")) #replaces the px with nothing and converts to an integer
-    return pixels
 
 def check_memory(camera_frequency_hz,scan_width_px,roi_mode=False,verbose=False):
     """Checks the current acquisitions size and checks the amount of RAM available to see if it will fit cleanly
@@ -120,7 +123,7 @@ def create_scalebar(ax,scalebar_size_pixels,metadata):
     ax.add_artist(scalebar)
 
 def calculate_wavelength(energy):
-    """energy in electronvolts -> return in picometers"""
+    """energy in electronvolts -> return wavelength in picometers"""
     phir = energy*(1 + scipy.constants.e*energy/(2*scipy.constants.m_e*scipy.constants.c**2))
     g = np.sqrt(2*scipy.constants.m_e*scipy.constants.e*phir)
     k = g/scipy.constants.hbar
@@ -158,7 +161,8 @@ def generate_colourmaps(num_colors, num_bins=100, mode=None):
 
     return colormaps
 
-def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=False,pixel_time=None,scan_rotation=0,edx_enabled=False,num_frames=None): #TODO needs testing
+#TODO refacctored but needs more testing and checking in functions
+def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=False,pixel_time=None,edx_enabled=False,num_frames=None,scan_height=None): #TODO needs testing
     """Extracts acquisition conditions from the microscope and stores them in a dictionary
     Parameters:
     acquisition_type: String "STEM" or" camera"/"4d-stem,
@@ -173,30 +177,30 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
 
     """Get all conditions to reduce unnecessary hardware call duplication"""
 
-    if scan_width_px is None:
-        scan_width_px = get_number_of_nav_pixels()
+    app = get_app()
 
-    fov = grpc_client.scanning.get_field_width() #get the current scanning FOV
+    if scan_width_px is None:
+        scan_width_px = app.scanning.get_pixel_count().value
+
+    fov = app.scanning.get_fov() #get the current scanning FOV
     pixel_size_nm = (fov/scan_width_px)*1e9 #pixel size in nanometers
     time_now = datetime.now()
     acquisition_time = time_now.strftime("%d_%m_%Y %H_%M")
-    energy=grpc_client.gun.get_high_voltage()
+    energy= app.api.gun.get_high_voltage()
     wavelength = calculate_wavelength(energy)
-    pixel_size_inv_angstrom = (2*grpc_client.projection.get_max_camera_angle())*1e-3/(
-                wavelength*0.01)/512 #assuming 512 pixels
+    camera_angle =  app.detectors.camera.get_camera_angle()
+    pixel_size_inv_angstrom = (2* camera_angle)*1e-3/(
+            wavelength*0.01)/512 #assuming 512 pixels
+    probe_current = app.optics.get_current()  # amps
+    probe_size = app.optics.get_diameter()  # meters
 
-    probe_current = grpc_client.illumination.get_current() #amps
-    probe_size = grpc_client.illumination.get_beam_diameter() #meters
+    optical_mode = app.api.microscope.get_optical_mode().name
 
-    optical_mode = grpc_client.microscope.get_optical_mode()
-    optical_mode = optical_mode.name
-
-    max_angles = grpc_client.projection.get_max_detector_angles()
-    max_camera_angle = grpc_client.projection.get_max_camera_angle()
+    max_angles = app.api.projection.get_max_detector_angles()
 
 
     if pixel_time == None: #only needed for acquisitions from the console that use the UI dwell time
-        pixel_time = window.scanning.pixel_time_spin.value() #in us
+        pixel_time = app.scanning.get_pixel_time()
 
     electrons_per_amp = 1 / scipy.constants.elementary_charge
     electrons_in_probe = electrons_per_amp * probe_current  # electrons in probe per second
@@ -219,137 +223,96 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
     "Acquisition date and time":acquisition_time,
     "Optical mode":optical_mode,
     "High Tension (kV)":energy/1e3,
-    "Probe current (pA)" : np.round(probe_current*1e12,2),
-    "Convergence semiangle (mrad)" : np.round(grpc_client.illumination.get_convergence_half_angle()*1e3,2),
-    "Beam diameter (d50) (nm)" : np.round(probe_size*1e9,2),
+    "Probe current (pA)" : float(np.round(probe_current*1e12,2)),
+    "Convergence semiangle (mrad)" : float(np.round(app.optics.get_angle()*1e3,2)),
+    "Beam diameter (d50) (nm)" : float(np.round(probe_size*1e9,2)),
     "FOV (um)" : fov*1e6,
-    "Pixel size (nm)" : np.round(pixel_size_nm,2),
-    "Scan width (px)":scan_width_px,
+    "Pixel size (nm)" : float(np.round(pixel_size_nm,2)),
     "Pixel time (s)": pixel_time,
-    #"Diffraction semiangle (mrad)" : np.round(grpc_client.projection.get_max_camera_angle()*1e3,2),
-    #"Diffraction angle (mrad)" : np.round(grpc_client.projection.get_max_camera_angle()*1e3*2,2),
-    #"Camera pixel size (A^-1)":pixel_size_inv_angstrom,
-    "Scan rotation (deg)":scan_rotation,
-    "Pixel dose e-nm-2": electrons_per_meter_square_pixel * 1e-18,
-    "Probe dose e-nm-2": electrons_per_meter_square_probe * 1e-18,
-    "Pixel dose e-A-2": electrons_per_meter_square_pixel * 1e-20,
-    "Probe dose e-A-2": electrons_per_meter_square_probe * 1e-20,
-    "Pixel dose rate e-A-2s-1": dose_rate_pixel_angstroms,
-    "Probe dose rate-A-2s-1": dose_rate_probe_angstroms,
-    "Ratio of probe size to pixel size": pixel_to_probe_ratio}
+    "Scan rotation (deg)": float(np.rad2deg(app.scanning.get_scanning_rotation())),
+    "Pixel dose (e-nm-2)": float(np.round(electrons_per_meter_square_pixel * 1e-18,3)),
+    "Probe dose (e-nm-2)": float(np.round(electrons_per_meter_square_probe * 1e-18,3)),
+    "Pixel dose (e-A-2)": float(np.round(electrons_per_meter_square_pixel * 1e-20,3)),
+    "Probe dose (e-A-2)": float(np.round(electrons_per_meter_square_probe * 1e-20,3)),
+    "Pixel dose rate (e-A-2s-1)": float(np.round(dose_rate_pixel_angstroms,3)),
+    "Probe dose rate (e-A-2s-1)": float(np.round(dose_rate_probe_angstroms,3)),
+    "Ratio of probe size to pixel size": float(np.round(pixel_to_probe_ratio,3))}
 
     microscope_info["Acquisition type"]= acquisition_type
 
-    if acquisition_type.lower() == "stem":
-        HAADF_inserted = grpc_client.stem_detector.get_is_inserted(grpc_client.stem_detector.DetectorType.HAADF)
-        microscope_info["Dwell time (us)"] = pixel_time*1e6 #seconds to microseconds
-        microscope_info["BF collection semi-angle (mrad)"]= 1e3*max_angles["bf"]["end"] if not HAADF_inserted else 1e3*max_angles["haadf"]["start"]
-        microscope_info["ADF inner collection semi-angle (mrad)"] = 1e3*max_angles["haadf"]["start"]
-        microscope_info["ADF outer collection semi-angle (mrad)"] = 1e3*max_angles["haadf"]["end"]
+    microscope_info["Scan width (px)"] = scan_width_px
+    if scan_height is not None:
+        microscope_info["Scan height (px)"]: scan_height
 
-    if acquisition_type.lower() == "camera" or "4d-stem":
-        camera_roi_mode = grpc_client.scanning.get_camera_roi()
-        camera_roi_mode = camera_roi_mode["roi_mode"].name
-        if camera_roi_mode == "Lines_128":
+    if acquisition_type.lower() == "stem":
+        HAADF_inserted = app.api.stem_detector.get_is_inserted(DT.HAADF)
+
+
+        microscope_info["Dwell time (us)"] = pixel_time*1e6 #seconds to microseconds
+
+        BF_angle = 1e3*max_angles["bf"]["end"] if not HAADF_inserted else 1e3*max_angles["haadf"]["start"]
+
+        microscope_info["BF collection semi-angle (mrad)"]= float(np.round(BF_angle,1))
+        microscope_info["ADF inner collection semi-angle (mrad)"] = float(np.round(1e3*max_angles["haadf"]["start"],1))
+        microscope_info["ADF outer collection semi-angle (mrad)"] = float(np.round(1e3*max_angles["haadf"]["end"],1))
+
+    if acquisition_type.lower() == "camera" or acquisition_type.lower() == "4d":
+        camera_roi_mode = app.detectors.camera.get_roi()
+        roi_name = camera_roi_mode.name
+        microscope_info["Camera ROI Mode"] = roi_name
+        if roi_name == "Lines_128":
             camera_pixels = (512,128)
             diffraction_scaling = 4
-        if camera_roi_mode == "Lines_256":
+        if roi_name == "Lines_256":
             camera_pixels = (512, 256)
             diffraction_scaling = 2
-        elif camera_roi_mode == "Disabled":
+        elif roi_name == "Disabled":
             camera_pixels = (512,512)
             diffraction_scaling = 1
 
-        microscope_info["Diffraction semiangle (mrad)"] = np.round(max_camera_angle*1e3,2)/diffraction_scaling
-        microscope_info["Diffraction angle (mrad)"] = np.round(max_camera_angle*1e3*2,2)/diffraction_scaling
-        microscope_info["Camera pixel size (A^-1)"] = pixel_size_inv_angstrom,
-        microscope_info["Rotation angle between diffraction pattern and stage XY (deg)"] = np.round(np.rad2deg(grpc_client.projection.get_camera_to_stage_rotation()),2),
+        microscope_info["Diffraction semiangle (mrad)"] = float(np.round(camera_angle*1e3,2)/diffraction_scaling)
+        microscope_info["Diffraction angle (mrad)"] = float(np.round(camera_angle*1e3*2,2)/diffraction_scaling)
+        microscope_info["Camera pixel size (A^-1)"] = float(pixel_size_inv_angstrom),
+        microscope_info["Rotation angle between diffraction pattern and stage XY (deg)"] = float(np.round(np.rad2deg(app.api.projection.get_camera_to_stage_rotation()),2))
 
         mrad_per_pixel = (microscope_info["Diffraction semiangle (mrad)"] * 2) / camera_pixels[1]  # angle calibration per pixel #TODO might not work for ROI mode...
         convergence_pixels = microscope_info["Convergence semiangle (mrad)"] / mrad_per_pixel  # convergence angle in pixels
         pixel_radius = convergence_pixels  # semi-angle and radius
         microscope_info["Dwell time (ms)"] = pixel_time*1e3 #seconds to milliseconds
-        microscope_info["Predicted diffraction spot diameter (px)"] = np.round(pixel_radius,2) #TODO check with ROI mode
+        microscope_info["Predicted diffraction spot diameter (px)"] = float(np.round(pixel_radius,2)) #TODO check with ROI mode
         microscope_info["Camera acquisition size (px)"] = str(camera_pixels)
         microscope_info["Camera ROI mode"] = camera_roi_mode
 
     if use_precession==True:
         microscope_info["Precession enabled"]=use_precession
-        microscope_info["precession angle (mrad)"] = grpc_client.scanning.get_precession_angle()*1e3
-        microscope_info["precession angle (deg)"] = np.round(np.rad2deg(microscope_info["precession angle (mrad)"]/1000),2)
-        microscope_info["Precession Frequency (kHz)"] = grpc_client.scanning.get_precession_frequency()/1e3
+        microscope_info["precession angle (mrad)"] = app.api.scanning.get_precession_angle()*1e3
+        microscope_info["precession angle (deg)"] = float(np.round(np.rad2deg(microscope_info["precession angle (mrad)"]/1000),2))
+        microscope_info["Precession Frequency (kHz)"] = app.api.scanning.get_precession_frequency()/1e3
 
     if edx_enabled == True:
-        edx_filter = grpc_client.xray.get_xray_filter_type()
+        edx_filter = app.api.xray.get_xray_filter_type()
         microscope_info["EDX detector filter"] = edx_filter.name
-        microscope_info["Number of frames"] = num_frames
-        microscope_info["Total scanning time (s)"] =num_frames*pixel_time*scan_width_px*scan_width_px
+        if num_frames is not None:
+            microscope_info["Number of frames"] = num_frames
+            if scan_height is not None:
+                microscope_info["Total scanning time (s)"] =num_frames*pixel_time*scan_width_px*scan_height
+            else:
+                microscope_info["Total scanning time (s)"] =num_frames*pixel_time*scan_width_px**2
+            microscope_info["Total series dose (e-A-2)"] = microscope_info["Probe dose rate (e-A-2s-1)"]* microscope_info["Total scanning time (s)"]
 
-    microscope_info
+    xy = app.stage.get_xy()
+    z = app.stage.get_z()
+    alpha = app.stage.get_alpha()
+    beta = app.stage.get_beta()
 
-
-
-    microscope_info["Alpha tilt (deg)"] = np.round(grpc_client.stage.get_alpha()/np.pi*180,2)
-    microscope_info["Beta tilt (deg)"] = np.round(grpc_client.stage.get_beta()/np.pi*180,2)
-    microscope_info["X (um)"] = np.round(grpc_client.stage.get_x_y()["x"]*1e6,2)
-    microscope_info["Y (um)"] = np.round(grpc_client.stage.get_x_y()["y"]*1e6,2)
-    microscope_info["Z (um)"] = np.round(grpc_client.stage.get_z()*1e6,2)
+    microscope_info["Alpha tilt (deg)"] = float(np.round(np.rad2deg(alpha),2))
+    microscope_info["Beta tilt (deg)"] = float(np.round(np.rad2deg(beta),2))
+    microscope_info["X (um)"] = float(np.round(xy[0]*1e6,2))
+    microscope_info["Y (um)"] = float(np.round(xy[1]*1e6,2))
+    microscope_info["Z (um)"] = float(np.round(z*1e6,2))
 
     return microscope_info
 
-def acquire_precession_tilt_series(upper_limit_degrees): #TODO untested
-    filepath = g.diropenbox("Select directory to save series","Save location")
-    beam_size = grpc_client.illumination.get_beam_diameter()
-
-    grpc_client.scanning.set_scan_field_width(beam_size*2) # TODO check if this works
-    pattern_list = []
-
-    angle_list = list(np.linspace(0,upper_limit_degrees,0.1))
-
-
-    if grpc_client.stem_detector.get_is_inserted(DT.BF) or grpc_client.stem_detector.get_is_inserted(
-            DT.HAADF) == True:  # if either STEM detector is inserted
-        grpc_client.stem_detector.set_is_inserted(DT.BF, False)  # retract BF detector
-        grpc_client.stem_detector.set_is_inserted(DT.HAADF, False)  # retract ADF detector
-        for i in tqdm(range(5), desc="Stabilising after STEM detector retraction", unit=""):
-            sleep(1)  # wait for 5 seconds
-    grpc_client.projection.set_is_off_axis_stem_enabled(
-        False)  # puts the beam back on the camera if in off-axis mode
-    sleep(0.2)  # stabilisation after deflector change
-
-    scan_width_px = 8
-
-    for i in angle_list:
-        print(f"Current precession angle {i} degrees")
-        radians = np.deg2rad(i)
-        grpc_client.scanning.set_precession_angle(radians)
-        scan_id = scan_helper.start_rectangle_scan(pixel_time=1e-3,
-                                                   total_size=scan_width_px, frames=1, detectors=[DT.Camera],
-                                                   is_precession_enabled=True)
-        image_list = []  # empty list to take diffraction data
-        for i in tqdm(range(scan_width_px), desc="Retrieving data from cache", total=scan_width_px,
-                      unit="chunks"):  # retrives data one scan row at a time to avoid crashes
-            header, data = cache_client.get_item(scan_id, scan_width_px)  # cache retrieval in rows
-            camera_size = data["cameraData"].shape[1], data["cameraData"].shape[2]  # gets shape of diffraction patterns
-            image_data = data["cameraData"]  # take the data for that row
-            image_row = np.reshape(image_data, (
-            scan_width_px, camera_size[0], camera_size[1]))  # reshapes data to an individual image
-            image_list.append(image_row)  # adds it to the list of images
-
-        single_pattern = np.sum(np.asarray(image_list,dtype=np.uint64),axis=0)
-        pattern_list.append(single_pattern)
-
-    annotated_images = []
-    for i in range(len(pattern_list)):
-        image = pattern_list[i].astype(np.uint8)
-        angle = angle_list[i]
-        text = f"Precession angle {angle} degrees"
-        cv2.putText(image, text, (10,10), fontFace=cv2.FONT_HERSHEY_COMPLEX, fontScale=1.5, color=(255, 225, 255))
-        filename = filepath+f"\precession angle {angle} degrees.tiff"
-        cv2.imwrite(filename,image)
-        annotated_images.append(image)
-
-    return image_list,angle_list
 
 def downsample_diffraction(array4d,rescale_to=128, mode='sum'):#TODO tested ok
     """
@@ -457,24 +420,29 @@ def array2blo(data: np.ndarray,meta: dict,filename,intensity_scaling="crop",bin_
     )
     return #TODO tested ok
 
-def dose_budget(budget_el_per_ang=10): #TODO untested
+def dose_budget(budget_el_per_ang=10,probe_current=None,beam_size=None): #TODO test maths
+
+    app = get_app
 
     dose_budget = budget_el_per_ang #electrons_per_square_angstrom
-    probe_current = grpc_client.illumination.get_current() #amps
+    if probe_current is None:
+        probe_current = app.api.illumination.get_current() #amps
 
     electrons_per_amp = 1 / scipy.constants.elementary_charge
     electrons_in_probe = electrons_per_amp * probe_current  # electrons in probe per second
 
-    probe_size = grpc_client.illumination.get_beam_diameter() #get current probe size
-    probe_area = np.pi * (probe_size / 2) ** 2  # assume circular probe
-    probe_dose_rate = electrons_in_probe/probe_area #electrons_per_square_meter
+    if beam_size is None:
+        beam_size = app.api.illumination.get_beam_diameter() #get current probe size
+    beam_area = np.pi * (beam_size / 2) ** 2  # assume circular probe
+    beam_dose_rate = electrons_in_probe/beam_area #electrons_per_square_meter
 
-    probe_dose_rate_angstroms = probe_dose_rate/1e20
-    max_exposure_time_seconds = dose_budget/probe_dose_rate_angstroms
+    beam_dose_rate_angstroms = beam_dose_rate/1e20
+    max_exposure_time_seconds = dose_budget/beam_dose_rate_angstroms
     min_FPS = 1/max_exposure_time_seconds
 
-    return probe_dose_rate_angstroms,max_exposure_time_seconds,min_FPS
+    results = {"Acquisition dose rate,e-a-2s-1": float(np.round(beam_dose_rate_angstroms,1)),"Maximum acquisition time (s)": max_exposure_time_seconds,"Maximum acquisition time (us)": float(np.round(max_exposure_time_seconds*1e6,2)), "Minimum camera frequency (FPS)":float(np.round(min_FPS,1))}
 
+    return results
 
 def read_tiff_series(folder_path, sort=True, return_metadata=False):
     """
@@ -527,3 +495,106 @@ def read_tiff_series(folder_path, sort=True, return_metadata=False):
                 images.append(img)
 
     return images
+
+def view_all_models(host=None):
+    if host == None:
+        host = config.inference.host
+
+    manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host, image_encoder='.tiff')
+    models = manager.list_all_models() #gets all of the available models
+    descriptions = []
+    for i in models:
+        description = manager.describe_model(i)
+        print(f"{description[0]["modelName"]}, Version {description[0]["modelVersion"]}, Current workers available {description[0]["minWorkers"]}, Processor type {description[0]["deviceType"]}")
+        descriptions.append((description[0]["modelName"],description[0]["minWorkers"]))
+    return descriptions
+
+def model_has_workers(model_name,host=None):
+
+    if host == None:
+        host = config.inference.host
+
+    manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
+                                    image_encoder='.tiff')  # contacts the model manager
+    model_status = manager.describe_model(model_name)
+    if model_status[0]["minWorkers"] != 0:
+        has_workers = True
+    else: has_workers = False
+
+    return has_workers
+
+
+def crop_images_to_fixed_square(image_rows, square_size):
+    """
+    Crop a nested list of images (as NumPy arrays) to a fixed square size, centered around the middle
+    of each image, processing the entire list at once.
+
+    :param image_rows: Nested list of NumPy array images (rows of images)
+    :param square_size: The fixed size of the square to crop (int)
+    :return: Nested list of cropped NumPy array images (rows of cropped images)
+    """
+    cropped_rows = []  # List to store cropped rows
+    while image_rows:
+        # Remove the first row from the list
+        row = image_rows.pop(0)
+        # Assume all images in the row have the same dimensions (use the first image)
+        height, width = row[0].shape[:2]
+        # Validate the square size once for the row
+        if square_size > height or square_size > width:
+            raise ValueError(
+                f"Square size {square_size} is too large for images with dimensions ({height}, {width})")
+        # Calculate the top-left corner once for the row
+        top = (height - square_size) // 2
+        left = (width - square_size) // 2
+        # Process the row
+        cropped_row = []
+        for img in row:
+            cropped_img = img[top:top + square_size, left:left + square_size]# Crop the image using the precomputed coordinates
+            cropped_row.append(cropped_img)# Add the processed row to the cropped_rows list
+        cropped_rows.append(cropped_row)
+
+    return cropped_rows
+
+def crop_center_square(data: np.ndarray, square_size: int, copy: bool = False) -> np.ndarray:
+    """
+    Center-crop the last two axes (Y, X) of an array to a fixed square.
+
+    Works for:
+      - (camY, camX)
+      - (N, camY, camX)
+      - (scanY, scanX, camY, camX)
+      - any shape ending in (..., camY, camX)
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Input array with at least 2 dimensions.
+    square_size : int
+        Target square size.
+    copy : bool
+        If True, return a contiguous copy. If False (default), return a view.
+
+    Returns
+    -------
+    np.ndarray
+        Cropped array.
+    """
+    if data.ndim < 2:
+        raise ValueError(f"data must have at least 2 dims, got {data.ndim}")
+
+    camY, camX = data.shape[-2], data.shape[-1]
+    if square_size > camY or square_size > camX:
+        raise ValueError(
+            f"square_size={square_size} exceeds last-two dims ({camY}, {camX})"
+        )
+
+    top = (camY - square_size) // 2
+    left = (camX - square_size) // 2
+
+    cropped = data[..., top:top + square_size, left:left + square_size]
+
+    if copy:
+        # Make it contiguous and independent of the original buffer
+        return np.ascontiguousarray(cropped)
+
+    return cropped

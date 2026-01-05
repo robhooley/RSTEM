@@ -27,15 +27,9 @@ from serving_manager.api import TorchserveRestManager
 from expert_pi.app import app
 from expert_pi.gui import main_window
 
-window = main_window.MainWindow()
-controller = app.MainApp(window)
-cache_client = controller.cache_client
+
 
 from expert_pi.measurements import edx_processing
-
-
-#window = main_window.MainWindow()
-#controller = main_controller.MainController(window)
 
 from expert_pi.RSTEM.utilities import generate_colourlist,generate_colourmaps
 
