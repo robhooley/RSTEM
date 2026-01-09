@@ -1,5 +1,4 @@
 import os
-from expert_pi.measurements import shift_measurements
 import pickle
 import numpy as np
 import easygui as g
@@ -8,6 +7,7 @@ from tqdm import tqdm
 from sys import getsizeof
 import matplotlib.colors as mcolors
 from collections import defaultdict
+from time import sleep,time
 import xraydb as xdb
 import scipy.signal
 import matplotlib.pyplot as plt
@@ -18,26 +18,47 @@ from skimage.restoration import denoise_nl_means, estimate_sigma
 from skimage.util import img_as_float32
 import hyperspy.api as hs
 import numpy as np
-from serving_manager.tem_models.specific_model_functions import registration_model
 
-from expert_pi import grpc_client
-from expert_pi.app import scan_helper
-from expert_pi.grpc_client.modules._common import DetectorType as DT,XrayFilterType as XFT
-from serving_manager.api import TorchserveRestManager
-from expert_pi.app import app
-from expert_pi.gui import main_window
+from importlib.util import find_spec
+
+from expertpi import application
+from expertpi.config import Config
+from expertpi.api import DetectorType as DT, RoiMode as RM, CondenserFocusType as CFT,DeflectorType as DFT
 
 
+#config = Config()
+config = Config(r"C:\Users\stem\Documents\Rob_coding\ExpertPI-0.5.1\config.yml") # path to config file if changes have been made, otherwise comment out and use default
 
-from expert_pi.measurements import edx_processing
+from serving_manager.management.torchserve_rest_manager import TorchserveRestManager #serving manager 0.9.3
+from serving_manager.tem_models.specific_model_functions import registration_model #serving manager 0.9.3
 
-from expert_pi.RSTEM.utilities import generate_colourlist,generate_colourmaps
+
+if find_spec("RSTEM.app_context") is not None:
+    from RSTEM.app_context import get_app
+    from RSTEM.utilities import (
+        model_has_workers,
+        collect_metadata,
+        generate_colourlist,
+        generate_colourmaps,
+        rotational_correction
+        )
+    from RSTEM.analysis import(
+    align_image_series)
+else:
+    from app_context import get_app
+    from utilities import (
+        model_has_workers,
+        collect_metadata,
+        generate_colourlist,
+        generate_colourmaps,
+        rotational_correction)
+    from analysis import (align_image_series)
 
 
-host = "192.168.51.3"
+#from expert_pi.measurements import edx_processing
 
 #TODO update to ML with scan rotation
-def acquire_EDX_map(frames=10,pixel_time=10e-6,fov=None,scan_rotation=0,num_pixels=512,drift_correction_method="patches",verbose_logging=False,precession=False):
+def acquire_EDX_map(frames=10,pixel_time=10e-6,num_pixels=None,host=None,model_name="TEMRegistration",logging=True):
     """Parameters
     frames: number of scans
     pixel_time: in seconds
@@ -46,35 +67,140 @@ def acquire_EDX_map(frames=10,pixel_time=10e-6,fov=None,scan_rotation=0,num_pixe
     num_pixels: scan dimensions
     drift_correction_method: either "patches" for openCV template matching, "ML" uses trained AI drift correction"""
 
-    folder = g.diropenbox("Select folder to save mapping layers into")
-    file_name = "\\EDX_map_frame"
-    print("Predicted measurement time:", pixel_time*num_pixels**2*frames/60, "min")
 
-    R = np.array([[np.cos(scan_rotation), np.sin(scan_rotation)],
-                 [-np.sin(scan_rotation), np.cos(scan_rotation)]])
+    """Parameters
+    num_frames : integer number of frames to acquire (total, including the seed frame)
+    pixel_time_us: pixel dwell time in microseconds; if None, read from UI
+    num_pixels: number of pixels in scanned image; default 1024
 
-    grpc_client.scanning.set_rotation(np.deg2rad(scan_rotation))
-    if fov is None:
-        fov=grpc_client.scanning.get_field_width() #in meters
-    if fov is not None:
-        grpc_client.scanning.set_field_width(fov) #in meters
+    Set the FOV and illumination conditions before calling; it uses current UI state.
+    """
+    app = get_app()
 
-    if grpc_client.stem_detector.get_is_inserted(DT.BF) is True and grpc_client.stem_detector.get_is_inserted(
-                DT.HAADF) is False:
-        tracking_signal = "BF"
-    if grpc_client.stem_detector.get_is_inserted(DT.BF) is False and grpc_client.stem_detector.get_is_inserted(
-            DT.HAADF) is False:
-        tracking_signal = "BF"
-        grpc_client.projection.set_is_off_axis_stem_enabled(True) #use off axis BF for tracking if both detectors are out
-    if grpc_client.stem_detector.get_is_inserted(DT.BF) is False and grpc_client.stem_detector.get_is_inserted(
-            DT.HAADF) is True:
-        tracking_signal = "HAADF"
-    if grpc_client.stem_detector.get_is_inserted(DT.BF) is True and grpc_client.stem_detector.get_is_inserted(
-            DT.HAADF) is True:
-        tracking_signal = "HAADF"
-    print(f"Image tracking using {tracking_signal} images")
 
-    map_data = []
+    try:
+        fov = float(app.scanning.get_fov())
+    except Exception as e:
+        raise RuntimeError(f"Failed to read field width (FOV): {e}")
+    if not np.isfinite(fov) or fov <= 0:
+        raise RuntimeError(f"Invalid field width (FOV): {fov!r}")
+
+    fov_x = fov_y = fov
+
+    try:
+        theta_val = np.rad2deg(app.scanning.get_scanning_rotation())
+        theta_deg = float(theta_val) if theta_val is not None else 0.0
+    except Exception:
+        raise RuntimeError(f"Cannot read Scan Rotation from HW")
+
+    # Decide tracking signal
+
+    haadf_in = app.api.stem_detector.get_is_inserted(DT.HAADF)
+    if haadf_in == False:
+        app.detectors.stem.insert_df(True)
+        app.scanning.set_off_axis(False)
+        sleep(5)
+
+    #tracking_signal = DT.HAADF
+    #track_key = "HAADF"  # expected keys in stemData
+
+    # Helpers
+
+
+    def _acquire_frame(pixel_time,num_pixels):
+        scan = app.acquisition.acquire_stem(pixel_time=pixel_time, total_size=num_pixels, frames=1,
+                                            detectors=(DT.BF,DT.HAADF),edx_detectors=(DT.EDX0,DT.EDX1))
+        image = scan.get_all()
+        EDX_data = scan.edx.get_frame(0)
+
+        frame = { "HAADF": image["HAADF"][0], "EDX": EDX_data}
+        return frame
+
+    if host is None:
+        host = config.inference.host
+
+    if pixel_time is None:
+        pixel_time = app.scanning.get_pixel_time()
+    if num_pixels is None:
+        num_pixels = app.scanning.get_pixel_count().value
+
+    manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
+                                        image_encoder='.tiff') #start serving manager
+    manager.scale(model_name=model_name)
+
+    images_list   = []   # list of dict frames: {"BF": np.ndarray|None, "HAADF": np.ndarray|None}
+    image_offsets = []   # list of deflector shift dicts (logged before applying correction)
+    map_data_list = []
+
+    # --- tracking frame -----------------------------------------
+    initial_shift = app.adjustments.get_illumination_shift()
+    seed_frame = _acquire_frame(pixel_time,num_pixels)
+    images_list.append(seed_frame["HAADF"])
+    map_data_list.append(seed_frame["EDX"])
+    image_offsets.append(initial_shift)
+
+    # --- Subsequent frames (register to previous) ---------------------------
+    for frame_idx in range(1, frames):
+        if logging:
+            print(f"Acquiring frame {frame_idx} of {frames - 1}")
+
+        curr = _acquire_frame(pixel_time, num_pixels)
+
+        prev_tracking = images_list[-1]  # last reference
+        curr_tracking = curr["HAADF"]
+
+        if prev_tracking is None or curr_tracking is None:
+            images_list.append(curr["HAADF"])
+            map_data_list.append(curr["EDX"])
+            image_offsets.append(app.adjustments.get_illumination_shift())
+            continue
+
+        # 1) Measure shift (curr vs prev)
+        reg_input = np.concatenate(
+            [curr_tracking.astype(np.float32, copy=False),
+             prev_tracking.astype(np.float32, copy=False)],
+            axis=1
+        )
+        pre_inference = time()
+        registration = registration_model(
+            reg_input,
+            model_name,
+            host=host, port='8080',
+            image_encoder='.tiff'
+        )
+        post_inference = time() - pre_inference
+        if logging:
+            print(post_inference, "seconds")
+
+        #raw_shift = registration[0]["translation"]  # normalized (dx_norm, dy_norm)
+
+        # 2) **Update reference for next iteration NOW**
+        images_list.append(curr["HAADF"])
+        map_data_list.append(curr["EDX"])
+        image_offsets.append(app.adjustments.get_illumination_shift())
+
+        dxn, dyn = registration[0]["translation"]  # normalized in image coords
+        signed_norm = (-dxn, -dyn)  # <-- flip X and Y
+        d_dx, d_dy = rotational_correction(
+            signed_norm, fov_x=fov_x, fov_y=fov_y, theta_deg=theta_deg, y_down=True
+        )
+
+        s = app.adjustments.get_illumination_shift()
+        if logging:
+            print("X shift um", s[0] * 1e6, "Y shift um", s[1] * 1e6)
+        app.adjustments.set_illumination_shift(s[0] + d_dx, s[1] + d_dy)
+
+    aligned_HAADF_series, summed_HAADF,pixel_shifts = align_image_series(images_list,model_name=model_name,plot=logging)
+
+    results = aligned_HAADF_series,summed_HAADF,images_list,map_data_list,pixel_shifts
+
+    return results
+
+
+
+
+
+    """map_data = []
     scan_id = scan_helper.start_rectangle_scan(pixel_time=pixel_time, total_size=num_pixels, frames=1, detectors=[DT.BF, DT.HAADF, DT.EDX1, DT.EDX0],use_precession=precession)
     header, data = cache_client.get_item(scan_id, num_pixels**2)
     initial_shift = grpc_client.illumination.get_shift(grpc_client.illumination.DeflectorType.Scan)
@@ -86,21 +212,6 @@ def acquire_EDX_map(frames=10,pixel_time=10e-6,fov=None,scan_rotation=0,num_pixe
     image_list = []
     anchor_image = data["stemData"][tracking_signal].reshape(num_pixels, num_pixels)
     image_list.append(anchor_image)
-
-    if verbose_logging == True: #TODO untested
-        if drift_correction_method == "ML":
-            drift_correction_method_named = "TESCAN's machine learning"
-        elif drift_correction_method == "patches" or "Patches":
-            drift_correction_method_named = "OpenCV sub-image template matching"
-        else:
-            print("Drift correction is not being performed")
-
-        print(f"Drift correction is using {drift_correction_method_named} for image registration")
-        #Initialise a figure for tracking image and drift plot
-        fig = plt.figure()
-        ax0,ax1 = plt.subplots(1,2)
-        image_view = ax0.imshow(anchor_image,cmap="grey")
-        ax1.scatter(0,0)
 
     for i in range(1, frames):
         print(f"Acquiring frame {i} of {frames}")
@@ -115,48 +226,24 @@ def acquire_EDX_map(frames=10,pixel_time=10e-6,fov=None,scan_rotation=0,num_pixe
         series_image = data["stemData"][tracking_signal].reshape(num_pixels, num_pixels)
 
         #TODO tidy up the shift offset inconsistencies
-        if drift_correction_method == "ML":
-            registration = registration_model(np.concatenate([anchor_image, series_image], axis=1),
-                                              'TEMRegistration', host=host, port='7443',
-                                              image_encoder='.tiff')  # measure offset of images # TODO corrects to first image, should it correct to previous image?
-            raw_shift = registration[0]["translation"]
-            #real_shift_x = raw_shift[0]*fov  # shifts normalised between 0,1 proportion of image, convert to meters
-            #real_shift_y = raw_shift[1]*fov
-            shift_offset = (raw_shift[0]*fov,raw_shift[1]*fov)
-            grpc_client.illumination.set_shift({"x": current_shift['x'] - shift_offset[0], "y": current_shift['y'] - shift_offset[1]},grpc_client.illumination.DeflectorType.Scan)  # apply shifts in microns to existing shifts #TODO check if this should be - shift or + shift
-            #print(f"frame {i}, X shift {current_shift['x'] - shift_offset[0]*1e9} nm, Y shift {current_shift['y'] - shift_offset[1]*1e9} nm")
-        elif drift_correction_method == "patches" or "Patches":
-            shift_offset = shift_measurements.get_offset_of_pictures(anchor_image, series_image, fov, method=shift_measurements.Method.PatchesPass2) # TODO corrects to first image, should it correct to previous image?
-            shift_offset = np.dot(R, shift_offset)  # rotate back
-            #print(f"frame {i}, X shift {current_shift['x'] - shift_offset[0]*1e9} nm, Y shift {current_shift['y'] - shift_offset[1]*1e9} nm")
-            grpc_client.illumination.set_shift({"x": current_shift['x'] - shift_offset[0], "y": current_shift['y'] - shift_offset[1]}, grpc_client.illumination.DeflectorType.Scan) #TODO check if it should be - or + shifts
-        else:
-            pass
+
 
         image_list.append(series_image)
         map_data.append((header,data,current_shift))
-        if verbose_logging == True: #TODO untested
-            print(f"Frame {i}, X shift {current_shift['x'] - shift_offset[0]*1e9} nm, Y shift {current_shift['y'] - shift_offset[1]*1e9} nm")
-            print("Map data RAM usage",getsizeof(map_data)*1e-6,"Megabytes")
-            print("Image list RAM usage",getsizeof(image_list)*1e-6,"Megabytes")
-            image_view.set_data(series_image) #updates image plot
-            ax1.scatter(shift_offset[0]*1e9,shift_offset[1]*1e9)
-            fig.canvas.draw()
-            fig.canvas.flush_events()
-
-    """Add in write metadata function"""
-    #metadata = utilities.get_microscope_parameters(scan_width_px=num_pixels,use_precession=False,STEM_dwell_time=pixel_time,scan_rotation=scan_rotation) #TODO fix import of utilities
-    #metadata["Number of frames"] =frames
-
-    return map_data #,metadata
 
 
-def construct_maps(map_data=None,elements=[""],end_of_series=None,mode=None,post_align=False):
+
+    return map_data"""
+
+
+def construct_maps(map_data=None, elements=None, end_of_series=None, mode=None):
     """parameters
     map_data : if map_data is stored in RAM, or left as None to load from file
     elements : List of elements in string format ["Cu","Al","Ti"]
     mode : Keep as None, mode="Explore" uses Explores color palette"""
 
+    if elements is None:
+        elements = ["Cu"]
     edx_data = []
     BFs = []
     ADFs = []
@@ -460,8 +547,6 @@ def integrate_energy_window(signal, energy_lower, energy_higher):
 
     return map2d
 
-
-
 def summed_spectrum_from_coords(signal, coords, average=False):
     """
     Extract and sum spectra from a list of (y, x) coordinates in a 2D HyperSpy signal.
@@ -650,17 +735,7 @@ def post_align_EDX_series(image_series,map_list, plot=True,model="TEMRomaTiny",h
 
     return [translated_list,translated_map_list, summed_map,summed_image,shifts]
 
-
-
-def non_local_means_filter(
-    image,
-    patch_size=7,
-    patch_distance=11,
-    h=None,
-    sigma=None,
-    fast_mode=True,
-    preserve_range=True,
-    ):
+def non_local_means_filter(image,patch_size=7,patch_distance=11,h=None,sigma=None,fast_mode=True,preserve_range=True):
     """
     Apply Non-Local Means (NLM) denoising to a 2D (grayscale) or 3D (color) image.
 

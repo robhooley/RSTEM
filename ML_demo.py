@@ -5,25 +5,20 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from time import time
 
-from expertpi import application, config
+from expertpi import application, Config
 
 from expertpi.api import DetectorType as DT, RoiMode as RM, CondenserFocusType as CFT,DeflectorType as DFT
 
-#from expert_pi import grpc_client
-#from expert_pi.app import scan_helper
-#from expert_pi.grpc_client.modules._common import DetectorType as DT
-#from expert_pi.app import app
-#from expert_pi.gui import main_window
 
-#window = main_window.MainWindow()
-#controller = app.MainApp(window)
-#cache_client = controller.cache_client
 from RSTEM.app_context import get_app
 from serving_manager.management.torchserve_rest_manager import TorchserveRestManager #serving manager 0.9.3
 from serving_manager.tem_models.specific_model_functions import registration_model #serving manager 0.9.3
 
 #config = Config()
 config = Config(r"C:\Users\stem\Documents\Rob_coding\ExpertPI-0.5.1\config.yml") # path to config file if changes have been made, otherwise comment out and use default
+
+"""Demo scripts showing the integration of TESCAN ML models into ExpertPI"""
+
 
 def view_all_models(host=None):
     if host == None:
@@ -52,67 +47,166 @@ def model_has_workers(model_name,host=None):
 
     return has_workers
 
-def align_image_series(image_series, plot=False,host=None):
+def align_image_series(image_series, plot=False, host=None, model_name="TEMRegistration"):
     """
-    Align a list of 2D images to the first frame using the TEMRegistration model
-    'handles model scaling itself.
-    Returns: (aligned_list, summed_image, shifts)
+    Align a sequence of 2D images to the first frame using a TorchServe-hosted
+    image-registration model and accumulate the aligned result.
+
+    Each image in the input series is registered to the first image via a learned registration model
+    (e.g. TEMRegistration) served throughTorchServe. The model is expected to return a normalised
+     translation vector, which is converted into pixel shifts and applied using an affine warp.
+     All aligned frames are summed to produce an accumulated image, and the per-frame shifts are recorded.
+
+    Optionally,plots can be generated to visualise the reference image, final
+    frame, summed image, and measured drift trajectory.
+
+    Parameters
+    ----------
+    image_series : list of numpy.ndarray
+        Non-empty list of 2D images to be aligned. All images must have identical shape and
+        represent the same field of view. The first image in the list is used as the fixed
+        reference for all registrations.
+    plot : bool, optional
+        If ``True``, displays a multi-panel matplotlib figure showing the reference image,
+        the final frame in the series, the summed aligned image, and a scatter plot of the
+        measured x/y shifts. Default is ``False``.
+    host : str or None, optional
+        Hostname or IP address of the TorchServe inference server. If ``None``, the value is
+        taken from ``config.inference.host``.
+    model : str, optional
+        Name of the registration model deployed.  Default is ``"TEMRegistration"``. also possible are:
+        "TEMRoma", "TEMRomaTiny"
+
+    Returns
+    -------
+    translated_list : list of numpy.ndarray
+        List of aligned images, each warped into the reference frame and returned as
+        ``uint16`` arrays.
+    summed_image : numpy.ndarray
+        Floating-point image formed by summing all aligned frames. No normalisation or
+        averaging is applied.
+    shifts : list of tuple of float
+        List of measured translations for each frame in pixel units, given as
+        ``(x_shift_px, y_shift_px)`` relative to the reference image.
+
+    Raises
+    ------
+    Exception
+        If ``image_series`` is empty or not a list, or if the registration model cannot be
+        contacted on the specified host.
+    RuntimeError
+        If the registration model returns an invalid or malformed result (e.g. missing or
+        non-finite translation values).
+
     """
-    if host == None:
-        host = config.inference.host
+
+    if host is None:
+        host = config.inference.host  #pull from config
 
     if not isinstance(image_series, list) or len(image_series) == 0:
         raise Exception("Dataset must be a non-empty list of images")
 
-    initial_image = np.array(image_series[0], dtype=np.float64, copy=False)
+    initial_image = np.array(image_series[0], dtype=np.float64)
     H, W = initial_image.shape
-    pixel_shifts = []
+    shifts = []
     translated_list = []
 
     manager = TorchserveRestManager(
-        inference_port='8080', management_port='8081', host=host, image_encoder='.tiff')
-
+        inference_port='8080',
+        management_port='8081',
+        host=host,
+        image_encoder='.tiff'
+    )
     try:
-        manager.scale(model_name="TEMRegistration")
+        manager.scale(model_name=model_name)
     except Exception:
-        raise Exception("Registration model cannot be contacted")
-        return #if scaling does not work, end the alignment
+        raise Exception(f"{model_name} cannot be contacted")
+
+    acc = np.zeros((H, W), dtype=np.float64)
 
     for idx in tqdm(range(len(image_series)), desc="Aligning frames", unit="img"):
-        moving = np.array(image_series[idx], dtype=np.float64, copy=False)
+        moving_u16 = np.array(image_series[idx])
+        moving_f = moving_u16.astype(np.float32,)
 
-        # Side-by-side concat (H, 2W), matching your registration model contract
-        reg_input = np.concatenate([initial_image, moving], axis=1)
-        registration_values = registration_model(reg_input,'TEMRegistration',host=host,port='7443',image_encoder='.tiff')
-        dx_norm, dy_norm = registration_values[0]["translation"]
-        x_pixels_shift = dx_norm * H
-        y_pixels_shift = dy_norm * W
-        pixel_shifts.append((x_pixels_shift, y_pixels_shift))
+        reg_input = np.concatenate([initial_image, moving_f], axis=1)
+        registration_values = registration_model(
+            reg_input,
+            model_name,
+            host=host,
+            port="8080",
+            image_encoder='.tiff'
+        )
 
-        M = np.float32([[1, 0, x_pixels_shift], [0, 1, y_pixels_shift]]) #affine warp matrix
-        warped = cv2.warpAffine(moving.astype(np.uint16, copy=False),M,(W, H),flags=cv2.INTER_LINEAR,
-                                borderMode=cv2.BORDER_CONSTANT,borderValue=0)
-        translated_list.append(warped)
+        if not isinstance(registration_values, (list, tuple)) or len(registration_values) == 0:
+            raise RuntimeError("registration_model returned no results")
+        rv0 = registration_values[0]
+        if not isinstance(rv0, dict) or "translation" not in rv0:
+            raise RuntimeError("registration_model result missing 'translation'")
+        translation = rv0["translation"]
+        if (not isinstance(translation, (list, tuple)) or len(translation) != 2 or
+                not np.all(np.isfinite(translation))):
+            raise RuntimeError(f"Invalid 'translation' payload: {translation!r}")
 
-    summed_image = np.sum(np.asarray(translated_list), axis=0, dtype=np.float64)
+        dx_norm, dy_norm = translation
+
+        x_pixels_shift = dx_norm * W
+        y_pixels_shift = dy_norm * H
+        shifts.append((x_pixels_shift, y_pixels_shift))
+
+        M = np.float32([[1, 0, x_pixels_shift], [0, 1, y_pixels_shift]])
+
+        warped_f = cv2.warpAffine(
+            moving_f,
+            M,
+            (W, H),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT_101
+        )
+
+        acc += warped_f.astype(np.float64)
+
+        warped_u16 = np.clip(warped_f, 0, 65535).astype(np.uint16)
+        translated_list.append(warped_u16)
+
+    summed_image = acc
 
     if plot:
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
-        fig.set_size_inches(15,5)
+        xs, ys = zip(*shifts) if shifts else ([], [])
+        fig, (ax1, ax2, ax3,ax4) = plt.subplots(1, 4)
+        fig.set_size_inches(15, 5)
         ax1.imshow(initial_image, cmap="gray")
         ax1.title.set_text("Initial Image")
-        plt.setp(ax1, xticks=[], yticks=[])  # removes ticks
+        plt.setp(ax1, xticks=[], yticks=[])
         ax2.imshow(image_series[-1], cmap="gray")
-        ax2.title.set_text("Final Image")
-        plt.setp(ax2, xticks=[], yticks=[])  # removes ticks
+        ax2.title.set_text(f"Final Image")
+        plt.setp(ax2, xticks=[], yticks=[])
         ax3.imshow(summed_image, cmap="gray")
-        ax3.title.set_text(f"Summation of {len(image_series)+1} images")
-        plt.setp(ax3, xticks=[], yticks=[])  # removes ticks
+        ax3.title.set_text(f"Summation of {len(image_series)} images")
+        plt.setp(ax3, xticks=[], yticks=[])
+        ax4.scatter(xs, ys, s=10)
+        xs, ys = zip(*shifts) if shifts else ([], [])
+        ax4.set_title("Measured drift")
+        ax4.set_xlabel("x shift [px]")
+        ax4.set_ylabel("y shift [px]")
+        if xs and ys:
+            t = np.arange(len(xs))  # 0..N-1 (acquisition index)
+            # RdYlBu maps low->red, high->blue (so start=red, end=blue)
+            sc = ax4.scatter(xs, ys, c=t, cmap="RdYlBu", s=16)
+            # (optional) faint trajectory line for context
+            ax4.plot(xs, ys, linewidth=0.8, alpha=0.4)
+            # 1:1 data scale and square axes panel
+            ax4.set_aspect('equal', adjustable='datalim')
+            ax4.set_box_aspect(1)
+            ax4.set_anchor('C')
+            ax4.grid(True, alpha=0.2)
+            # Colorbar keyed to acquisition index
+            cb = plt.colorbar(sc, ax=ax4, fraction=0.046, pad=0.04)
+            cb.set_label("Frame index (0 = start)")
+        ax4.set_anchor('C')  # center the square axis in its slot
+        ax4.autoscale_view()  # respect current data limits
+        plt.show()
 
-        plt.show(block=False)
-
-    return translated_list, summed_image, pixel_shifts
-
+    return translated_list, summed_image, shifts
 
 def get_spot_positions(image,threshold=0,host=None,model_name="spot_segmentation",logging=True):
 
@@ -185,9 +279,7 @@ def rotational_correction(raw_shift, fov_x, fov_y, theta_deg, y_down=True):
     delta_deflector = -v_scan
     return float(delta_deflector[0]), float(delta_deflector[1])
 
-#handles scan rotation imaging
-#TODO refactored but untested
-def drift_corrected_imaging(num_frames, pixel_time=None, num_pixels=None,host=None): #TODO full refactor needed
+def drift_corrected_imaging(num_frames=10, pixel_time=None, num_pixels=None, host=None,model_name="TEMRegistration",logging=False):  # TODO full refactor needed
     """Parameters
     num_frames : integer number of frames to acquire (total, including the seed frame)
     pixel_time_us: pixel dwell time in microseconds; if None, read from UI
@@ -201,7 +293,7 @@ def drift_corrected_imaging(num_frames, pixel_time=None, num_pixels=None,host=No
     image_offsets = []   # list of deflector shift dicts (logged before applying correction)
 
     try:
-        fov = float(app.scanning.get_fov().value)
+        fov = float(app.scanning.get_fov())
     except Exception as e:
         raise RuntimeError(f"Failed to read field width (FOV): {e}")
     if not np.isfinite(fov) or fov <= 0:
@@ -214,7 +306,7 @@ def drift_corrected_imaging(num_frames, pixel_time=None, num_pixels=None,host=No
         theta_val = np.rad2deg(app.scanning.get_scanning_rotation())
         theta_deg = float(theta_val) if theta_val is not None else 0.0
     except Exception:
-        raise RuntimeError(f"Cannot read Scan Rotation from HW")
+        raise RuntimeError("Cannot read Scan Rotation from HW")
 
     # Decide tracking signal
     bf_in    = app.api.stem_detector.get_is_inserted(DT.BF)
@@ -229,7 +321,7 @@ def drift_corrected_imaging(num_frames, pixel_time=None, num_pixels=None,host=No
     elif bf_in:
         tracking_signal = DT.BF
         app.scanning.set_off_axis(False)
-    else: #if nothing is inserted use off axis BF
+    else:  # if nothing is inserted use off-axis BF
         tracking_signal = DT.BF
         app.scanning.set_off_axis(True)
 
@@ -244,16 +336,18 @@ def drift_corrected_imaging(num_frames, pixel_time=None, num_pixels=None,host=No
             return [DT.BF]
         return dets if include_both_if_available else [tracking_signal]
 
-    def _acquire_frame(det_list,pixel_time,num_pixels):
-        scan = app.acquisition.acquire_stem(pixel_time=pixel_time, total_size=num_pixels, frames=1,
-                                            detectors=(DT.BF, DT.HAADF))
+    def _acquire_frame(det_list, pixel_time, num_pixels):
+        # honor the detector list passed in
+        scan = app.acquisition.acquire_stem(
+            pixel_time=pixel_time,
+            total_size=num_pixels,
+            frames=1,
+            detectors=tuple(det_list)
+        )
         image = scan.get_all()
-        BF_image = image["BF"][0]
-        ADF_image = image["HAADF"][0]
-
-        frame = {"BF": BF_image, "HAADF": ADF_image}
-
-        return frame
+        BF_image  = image["BF"][0]    if "BF" in image    and len(image["BF"])    else None
+        ADF_image = image["HAADF"][0] if "HAADF" in image and len(image["HAADF"]) else None
+        return {"BF": BF_image, "HAADF": ADF_image}
 
     if host is None:
         host = config.inference.host
@@ -263,61 +357,74 @@ def drift_corrected_imaging(num_frames, pixel_time=None, num_pixels=None,host=No
     if num_pixels is None:
         num_pixels = app.scanning.get_pixel_count().value
 
-    manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
-                                        image_encoder='.tiff') #start serving manager
-    manager.scale(model_name="TEMRegistration")
+    manager = TorchserveRestManager(
+        inference_port='8080',
+        management_port='8081',
+        host=host,
+        image_encoder='.tiff'
+    )
+    manager.scale(model_name=model_name)
 
     # --- tracking frame -----------------------------------------
-    initial_shift = app.api.illumination.get_shift(DFT.Scan)
-    seed_frame = _acquire_frame(_detectors_for_scan(include_both_if_available=True),pixel_time,num_pixels)
-    #if seed_frame[track_key] is None:
-        # Fallback: acquire both if tracking-only failed
-    #    seed_frame = _acquire_frame(_detectors_for_scan(include_both_if_available=True))
-    #    if seed_frame[track_key] is None:
-    #        raise RuntimeError(f"Tracking signal '{track_key}' not available in seed acquisition.")
+    initial_shift = app.adjustments.get_illumination_shift()
+    seed_frame = _acquire_frame(_detectors_for_scan(include_both_if_available=True), pixel_time, num_pixels)
     images_list.append(seed_frame)
     image_offsets.append(initial_shift)
 
     # --- Subsequent frames (register to previous) ---------------------------
     for frame_idx in range(1, num_frames):
         print(f"Acquiring frame {frame_idx} of {num_frames - 1}")
-        curr_frame = _acquire_frame(_detectors_for_scan(include_both_if_available=True),pixel_time,num_pixels)
+
+        curr_frame = _acquire_frame(_detectors_for_scan(include_both_if_available=True), pixel_time, num_pixels)
 
         prev_tracking = images_list[-1][track_key]
         curr_tracking = curr_frame[track_key]
         if prev_tracking is None or curr_tracking is None:
             # Skip correction if we lack the tracking channel
             images_list.append(curr_frame)
-            image_offsets.append(app.api.illumination.get_shift(DFT.Scan))
+            image_offsets.append(app.adjustments.get_illumination_shift())
             continue
 
-        # Registration input (current vs previous)
-        reg_input = np.concatenate([curr_tracking, prev_tracking], axis=1)
+        # Registration input (current vs previous). Model predicts motion curr -> prev in image coords.
+        reg_input = np.concatenate(
+            [curr_tracking.astype(np.float32, copy=False),
+             prev_tracking.astype(np.float32, copy=False)],
+            axis=1
+        )
         pre_inference = time()
         registration = registration_model(
             reg_input,
-            'TEMRegistration',
-            host=host, port='8080',
-            image_encoder='.tiff'
+            model_name,
+            host=host, port="8080",
+            image_encoder=".tiff"
         )
-        post_inference = time()-pre_inference
-        print(f"Inference time: {post_inference:3f}s")
-        raw_shift = registration[0]["translation"]  # normalized shift (dx_norm, dy_norm)
+        if logging:
+            post_inference = time() - pre_inference
+            print(f"Inference time: {post_inference:.3f}s")
 
-        # Convert image shift → deflector delta #if scan rotation is present, will calculate the shifts using the rotation
-        d_dx, d_dy = rotational_correction(
-            raw_shift, fov_x=fov_x, fov_y=fov_y, theta_deg=theta_deg, y_down=True
-        )
+        raw_shift = registration[0]["translation"]  # normalized (dx_norm, dy_norm)
 
-        # Apply correction relative to current scan deflector shift
-        s = app.api.illumination.get_shift(DFT.Scan)
-        app.api.illumination.set_shift(
-            {"x": s["x"] + d_dx, "y": s["y"] + d_dy},
-            DFT.Scan
-        )
-
+        # ---- Update reference for next iteration NOW (loop logic fix) ----
         images_list.append(curr_frame)
-        image_offsets.append(s)  # pre-correction log
+        image_offsets.append(app.adjustments.get_illumination_shift())
+
+        # ---- Apply counter-motion: invert BOTH axes before hardware mapping ----
+        # raw_shift is normalized image motion; invert to counteract drift
+        signed_norm = (-float(raw_shift[0]), -float(raw_shift[1]))
+
+        # Convert normalized image shift → deflector delta (handles rotation & y-down)
+        d_dx, d_dy = rotational_correction(
+            signed_norm,
+            fov_x=fov_x, fov_y=fov_y,
+            theta_deg=theta_deg,
+            y_down=True
+        )
+
+        # Apply correction relative to current deflector shift
+        s = app.adjustments.get_illumination_shift()
+        if logging:
+            print("X shift um", s[0] * 1e6, "Y shift um", s[1] * 1e6)
+        app.adjustments.set_illumination_shift(s[0] + d_dx, s[1] + d_dy)
 
     images_by_channel = {
         ch: [f[ch] for f in images_list if f.get(ch) is not None]
@@ -327,98 +434,22 @@ def drift_corrected_imaging(num_frames, pixel_time=None, num_pixels=None,host=No
 
     results = []
 
-    print("Post acquisition fine correction")
-    if "BF" in images_by_channel:
-        aligned_BF_series, summed_BF, _ = align_image_series(images_by_channel["BF"])
-        results.append((aligned_BF_series,summed_BF))
-    if "HAADF" in images_by_channel:
-        aligned_HAADF_series, summed_HAADF, _ = align_image_series(images_by_channel["HAADF"])
-        results.append((aligned_HAADF_series,summed_HAADF))
+    plot_flag = bool(logging)  # plot only on the first alignment we run
+
+    if "BF" in images_by_channel and "HAADF" in images_by_channel:
+        aligned_BF_series, summed_BF, _ = align_image_series(images_by_channel["BF"], plot=plot_flag)
+        results.append((aligned_BF_series, summed_BF))
+        plot_flag = False
+
+        aligned_HAADF_series, summed_HAADF, _ = align_image_series(images_by_channel["HAADF"], plot=plot_flag)
+        results.append((aligned_HAADF_series, summed_HAADF))
+
+    elif "BF" in images_by_channel:
+        aligned_BF_series, summed_BF, _ = align_image_series(images_by_channel["BF"], plot=plot_flag)
+        results.append((aligned_BF_series, summed_BF))
+
+    elif "HAADF" in images_by_channel:
+        aligned_HAADF_series, summed_HAADF, _ = align_image_series(images_by_channel["HAADF"], plot=plot_flag)
+        results.append((aligned_HAADF_series, summed_HAADF))
 
     return results
-
-
-def align_image_series(image_series, plot=False,host=None,model="TEMRegistration"):
-    """
-    Align a list of 2D images to the first frame using the TEMRegistration model
-    'handles model scaling itself.
-    Returns: (aligned_list, summed_image, shifts)
-    """
-
-    if host is None:
-        host = config.inference.host
-
-    #if model=="TEMRegistration":
-    #    port = 7443
-    #elif model == "TEMRoma" or "TEMRomaTiny":
-    #    port = 8080
-
-    if not isinstance(image_series, list) or len(image_series) == 0:
-        raise Exception("Dataset must be a non-empty list of images")
-
-    initial_image = np.array(image_series[0], dtype=np.float64, copy=False)
-    H, W = initial_image.shape
-    shifts = []
-    translated_list = []
-
-    # Self-contained TorchServe session (same model name)
-    manager = TorchserveRestManager(
-        inference_port='8080',
-        management_port='8081',
-        host=host,
-        image_encoder='.tiff'
-    )
-    # Safe to call repeatedly; if already scaled/loaded, server should no-op
-    try:
-        manager.scale(model_name=model)
-    except Exception:
-        raise Exception(f"{model} cannot be contacted")
-        #if scaling does not work, end the alignment
-
-    for idx in tqdm(range(len(image_series)), desc="Aligning frames", unit="img"):
-        moving = np.array(image_series[idx], dtype=np.float64, copy=False)
-
-        # Side-by-side concat (H, 2W), matching registration model contract
-        reg_input = np.concatenate([initial_image, moving], axis=1)
-        registration_values = registration_model(
-            reg_input,
-            model,
-            host=host,
-            port="8080",
-            image_encoder='.tiff'
-        )
-        # Expect [dx_norm, dy_norm] in [0..1]
-        dx_norm, dy_norm = registration_values[0]["translation"]
-        x_pixels_shift = dx_norm * H
-        y_pixels_shift = dy_norm * W
-        shifts.append((x_pixels_shift, y_pixels_shift))
-
-        M = np.float32([[1, 0, x_pixels_shift], [0, 1, y_pixels_shift]])
-        warped = cv2.warpAffine(
-            moving.astype(np.uint16, copy=False),
-            M,
-            (W, H),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0
-        )
-        translated_list.append(warped)
-
-    summed_image = np.sum(np.asarray(translated_list), axis=0, dtype=np.float64)
-
-    if plot:
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
-        fig.set_size_inches(15,5)
-        ax1.imshow(initial_image, cmap="gray")
-        ax1.title.set_text("Initial Image")
-        plt.setp(ax1, xticks=[], yticks=[])  # removes ticks
-        ax2.imshow(image_series[-1], cmap="gray")
-        ax2.title.set_text("Final Image")
-        plt.setp(ax2, xticks=[], yticks=[])  # removes ticks
-        ax3.imshow(summed_image, cmap="gray")
-        ax3.title.set_text(f"Summation of {len(image_series)+1} images")
-        plt.setp(ax3, xticks=[], yticks=[])  # removes ticks
-
-        plt.show()
-
-    return translated_list, summed_image, shifts

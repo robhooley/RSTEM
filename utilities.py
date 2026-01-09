@@ -6,50 +6,43 @@ import psutil
 from tqdm import tqdm
 import easygui as g
 import numpy as np
-from time import sleep
 import scipy.constants
 import matplotlib.colors as mcolors
 import random
 from rsciio.blockfile import file_writer
 import os
+import json
+import math
 import tifffile as tiff
-from time import time
-import matplotlib.pyplot as plt
+import fnmatch
+from importlib.util import find_spec
 
-#from expert_pi.__main__ import window
-
-#from expert_pi.__main__ import window
-#from expert_pi import grpc_client
-#from expert_pi.client import grpc_client #0.2.2
-#from expert_pi.app import scan_helper
-#from expert_pi.grpc_client.modules._common import DetectorType as DT
-#from expert_pi.grpc_client.enums import DetectorType as DT #0.2.2
-#from expert_pi.app import app
-#from expert_pi.gui import main_window
-
+from expertpi.config import Config
 from expertpi.api import DetectorType as DT, RoiMode as RM, CondenserFocusType as CFT
+
 from serving_manager.tem_models.specific_model_functions import registration_model
 from serving_manager.management.torchserve_rest_manager import TorchserveRestManager
-from expertpi.config import Config
-from RSTEM.app_context import get_app
 
-#cache client is now binary client
-#app.api is grpc_client
+if find_spec("RSTEM.app_context") is not None:
+    from RSTEM.app_context import get_app
+else:
+    from app_context import get_app
 
-#scan helper is gone
-
-#acquisition is now set differently for camera and stem
-
-#acquisition now returns a reader, data = reader.get_frame()
-#for STEM the data is cached and can be read with get_frame
-#for camera use reader.get_pixels() or get_lines() lines is my current behaviour
-#data must be read from the reader, or the reader must be closed to flush the cache and allow next acquisition
-#using app.command is synched to UI, but app.api is not (old behaviour)
 
 
 #config = Config()
 config = Config(r"C:\Users\stem\Documents\Rob_coding\ExpertPI-0.5.1\config.yml") # path to config file if changes have been made, otherwise comment out and use default
 
+def normalise_to_8bit(image):
+    """
+    Normalizes a numpy array to 8-bit for display purposes with percentile-based clipping.
+    """
+    lower_percentile, upper_percentile = np.percentile(image, [1, 99])  # Get 1st and 99th percentiles
+    clipped_image = np.clip(image, lower_percentile, upper_percentile)  # Clip to the range
+    image_min = clipped_image.min()
+    image_max = clipped_image.max()
+    normalized = (255 * (clipped_image - image_min) / (image_max - image_min)).astype(np.uint8)
+    return normalized
 
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None):
     if mask_center_coordinates is None:  # use the middle of the image
@@ -60,7 +53,6 @@ def create_circular_mask(image_height, image_width, mask_center_coordinates=None
     dist_from_center = np.sqrt((X - mask_center_coordinates[0])**2 + (Y - mask_center_coordinates[1])**2)
     mask = dist_from_center <= mask_radius
     return mask
-
 
 def spot_radius_in_px(data_array): #TODO refactor to be smarter
     """Takes a data array and works out the diffraction spot radius in pixels from the metadata"""
@@ -193,9 +185,7 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
             wavelength*0.01)/512 #assuming 512 pixels
     probe_current = app.optics.get_current()  # amps
     probe_size = app.optics.get_diameter()  # meters
-
     optical_mode = app.api.microscope.get_optical_mode().name
-
     max_angles = app.api.projection.get_max_detector_angles()
 
 
@@ -210,23 +200,21 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
     pixel_area = pixel_size ** 2
     electrons_per_meter_square_pixel = electrons_per_pixel_dwell / pixel_area
     """probe size calculation"""
-
     probe_area = np.pi * (probe_size / 2) ** 2  # assume circular probe
     electrons_per_meter_square_probe = electrons_per_pixel_dwell / probe_area
     """Calculate pixel size to probe size ratio"""
     pixel_to_probe_ratio = pixel_size / probe_size
-
     dose_rate_probe_angstroms = electrons_per_meter_square_probe * 1e-20 / pixel_time
     dose_rate_pixel_angstroms = electrons_per_meter_square_pixel * 1e-20 / pixel_time
 
     microscope_info = { #creates a dictionary of microscope parameters
     "Acquisition date and time":acquisition_time,
-    "Optical mode":optical_mode,
+    "Optical Mode":optical_mode,
     "High Tension (kV)":energy/1e3,
     "Probe current (pA)" : float(np.round(probe_current*1e12,2)),
     "Convergence semiangle (mrad)" : float(np.round(app.optics.get_angle()*1e3,2)),
     "Beam diameter (d50) (nm)" : float(np.round(probe_size*1e9,2)),
-    "FOV (um)" : fov*1e6,
+    "FOV (um)" : float(np.round(fov*1e6,3)),
     "Pixel size (nm)" : float(np.round(pixel_size_nm,2)),
     "Pixel time (s)": pixel_time,
     "Scan rotation (deg)": float(np.rad2deg(app.scanning.get_scanning_rotation())),
@@ -239,19 +227,14 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
     "Ratio of probe size to pixel size": float(np.round(pixel_to_probe_ratio,3))}
 
     microscope_info["Acquisition type"]= acquisition_type
-
     microscope_info["Scan width (px)"] = scan_width_px
     if scan_height is not None:
         microscope_info["Scan height (px)"]: scan_height
 
     if acquisition_type.lower() == "stem":
         HAADF_inserted = app.api.stem_detector.get_is_inserted(DT.HAADF)
-
-
         microscope_info["Dwell time (us)"] = pixel_time*1e6 #seconds to microseconds
-
         BF_angle = 1e3*max_angles["bf"]["end"] if not HAADF_inserted else 1e3*max_angles["haadf"]["start"]
-
         microscope_info["BF collection semi-angle (mrad)"]= float(np.round(BF_angle,1))
         microscope_info["ADF inner collection semi-angle (mrad)"] = float(np.round(1e3*max_angles["haadf"]["start"],1))
         microscope_info["ADF outer collection semi-angle (mrad)"] = float(np.round(1e3*max_angles["haadf"]["end"],1))
@@ -270,8 +253,10 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
             camera_pixels = (512,512)
             diffraction_scaling = 1
 
+        microscope_info["Camera acquisition size (px)"] = str(camera_pixels)
         microscope_info["Diffraction semiangle (mrad)"] = float(np.round(camera_angle*1e3,2)/diffraction_scaling)
         microscope_info["Diffraction angle (mrad)"] = float(np.round(camera_angle*1e3*2,2)/diffraction_scaling)
+        microscope_info["APerPixel (A/px)"] = float(1/pixel_size_inv_angstrom),
         microscope_info["Camera pixel size (A^-1)"] = float(pixel_size_inv_angstrom),
         microscope_info["Rotation angle between diffraction pattern and stage XY (deg)"] = float(np.round(np.rad2deg(app.api.projection.get_camera_to_stage_rotation()),2))
 
@@ -279,9 +264,9 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
         convergence_pixels = microscope_info["Convergence semiangle (mrad)"] / mrad_per_pixel  # convergence angle in pixels
         pixel_radius = convergence_pixels  # semi-angle and radius
         microscope_info["Dwell time (ms)"] = pixel_time*1e3 #seconds to milliseconds
-        microscope_info["Predicted diffraction spot diameter (px)"] = float(np.round(pixel_radius,2)) #TODO check with ROI mode
-        microscope_info["Camera acquisition size (px)"] = str(camera_pixels)
-        microscope_info["Camera ROI mode"] = camera_roi_mode
+
+        if optical_mode is not "ParallelBeam":
+            microscope_info["Predicted diffraction spot diameter (px)"] = float(np.round(pixel_radius,2)) #TODO check with ROI mode
 
     if use_precession==True:
         microscope_info["Precession enabled"]=use_precession
@@ -312,7 +297,6 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
     microscope_info["Z (um)"] = float(np.round(z*1e6,2))
 
     return microscope_info
-
 
 def downsample_diffraction(array4d,rescale_to=128, mode='sum'):#TODO tested ok
     """
@@ -444,7 +428,7 @@ def dose_budget(budget_el_per_ang=10,probe_current=None,beam_size=None): #TODO t
 
     return results
 
-def read_tiff_series(folder_path, sort=True, return_metadata=False):
+def read_image_series(folder_path, sort=True, return_metadata=False):
     """
     Reads all TIFF images from a folder into a list of NumPy arrays.
 
@@ -523,41 +507,11 @@ def model_has_workers(model_name,host=None):
 
     return has_workers
 
-
-def crop_images_to_fixed_square(image_rows, square_size):
+def crop_center_square(data, square_size= None,copy=  False):
     """
-    Crop a nested list of images (as NumPy arrays) to a fixed square size, centered around the middle
-    of each image, processing the entire list at once.
+    Center-crop the last two axes (Y, X) of an array to a square.
 
-    :param image_rows: Nested list of NumPy array images (rows of images)
-    :param square_size: The fixed size of the square to crop (int)
-    :return: Nested list of cropped NumPy array images (rows of cropped images)
-    """
-    cropped_rows = []  # List to store cropped rows
-    while image_rows:
-        # Remove the first row from the list
-        row = image_rows.pop(0)
-        # Assume all images in the row have the same dimensions (use the first image)
-        height, width = row[0].shape[:2]
-        # Validate the square size once for the row
-        if square_size > height or square_size > width:
-            raise ValueError(
-                f"Square size {square_size} is too large for images with dimensions ({height}, {width})")
-        # Calculate the top-left corner once for the row
-        top = (height - square_size) // 2
-        left = (width - square_size) // 2
-        # Process the row
-        cropped_row = []
-        for img in row:
-            cropped_img = img[top:top + square_size, left:left + square_size]# Crop the image using the precomputed coordinates
-            cropped_row.append(cropped_img)# Add the processed row to the cropped_rows list
-        cropped_rows.append(cropped_row)
-
-    return cropped_rows
-
-def crop_center_square(data: np.ndarray, square_size: int, copy: bool = False) -> np.ndarray:
-    """
-    Center-crop the last two axes (Y, X) of an array to a fixed square.
+    If square_size is None, the smallest of the last two dimensions is used.
 
     Works for:
       - (camY, camX)
@@ -569,8 +523,8 @@ def crop_center_square(data: np.ndarray, square_size: int, copy: bool = False) -
     ----------
     data : np.ndarray
         Input array with at least 2 dimensions.
-    square_size : int
-        Target square size.
+    square_size : int or None, optional
+        Target square size. If None, uses min(camY, camX).
     copy : bool
         If True, return a contiguous copy. If False (default), return a view.
 
@@ -583,6 +537,10 @@ def crop_center_square(data: np.ndarray, square_size: int, copy: bool = False) -
         raise ValueError(f"data must have at least 2 dims, got {data.ndim}")
 
     camY, camX = data.shape[-2], data.shape[-1]
+
+    if square_size is None:
+        square_size = min(camY, camX)
+
     if square_size > camY or square_size > camX:
         raise ValueError(
             f"square_size={square_size} exceeds last-two dims ({camY}, {camX})"
@@ -594,7 +552,103 @@ def crop_center_square(data: np.ndarray, square_size: int, copy: bool = False) -
     cropped = data[..., top:top + square_size, left:left + square_size]
 
     if copy:
-        # Make it contiguous and independent of the original buffer
         return np.ascontiguousarray(cropped)
 
     return cropped
+
+def import_4D_tiff_series(scan_width=None,load_metadata=False):
+    """Loads in a folder of TIFFs and creates a 4D-array for use with other functions"""
+    directory = g.diropenbox("Select directory","Select Directory")
+    if scan_width is None: #if scan width variable is empty, prompt user to enter it
+        num_files = len(fnmatch.filter(os.listdir(directory), '*.tiff')) #counts how many .tiff files are in the directory
+        guessed_scan_width = int(np.sqrt(num_files)) #assumes it is a square acquisition
+        scan_width=g.enterbox(f"Enter scan width in pixels, there are {num_files} TIFF files in this folder, "
+                                f"scan width might be {guessed_scan_width}","Enter scan width in pixels",
+                                default=str(guessed_scan_width))
+
+        scan_width=int(scan_width)
+        scan_height = int(num_files/scan_width)
+
+    if load_metadata == False:
+        metadata=None
+    if load_metadata == True:
+        metadata_path = g.fileopenbox("Select metadata file","Select metadata file")
+        loading_container = open(metadata_path,"r")
+        metadata = json.load(loading_container)
+
+    folder = os.listdir(directory) #formats the directory into proper syntax
+    image_list = [] #opens empty list
+    for file in tqdm(folder): #iterates through folder with a progress bar
+        path = directory+"\\"+file #picks individual images
+        if file.endswith(".tiff"):
+            image = cv2.imread(path,-1) #loads them with openCV
+            image_list.append(image) #adds them to a list of all images
+
+    array = np.asarray(image_list) #converts the list to an array
+    cam_pixels_x,cam_pixels_y = image_list[0].shape
+    reshaped_array = np.reshape(array,(scan_width,scan_height,cam_pixels_x,cam_pixels_y)) #reshapes the array to 4D dataset shape #TODO confirm ordering of scan width and height with non-square dataset
+    if load_metadata == False:
+        return reshaped_array #just a data array reshaped to the 4D STEM acquisition shape
+    else:
+        return (reshaped_array,metadata) #tuple containing the data array and the metadata dictionary
+
+def rotational_correction(raw_shift, fov_x, fov_y, theta_deg, y_down=True):
+    """
+    Map registration shift (normalized image coords) to deflector delta (physical).
+    raw_shift: (dx_norm, dy_norm) where +x=right, +y=down in image.
+    Returns (Δdef_x, Δdef_y) to ADD to current deflector shift (already negated to oppose drift).
+    """
+    dx_m = float(raw_shift[0]) * fov_x
+    dy_m = float(raw_shift[1]) * fov_y
+    if y_down:
+        dy_m = -dy_m  # array +y down → physical +y up
+
+    v_img = np.array([dx_m, dy_m], dtype=float)
+
+    th = np.deg2rad(theta_deg)
+    # Rotate image-vector by -θ into scan/deflector axes
+    Rm = np.array([[ np.cos(-th), -np.sin(-th)],
+                   [ np.sin(-th),  np.cos(-th)]], dtype=float)
+    v_scan = Rm @ v_img
+
+    # Oppose the measured drift: return the delta to ADD to current deflectors
+    delta_deflector = -v_scan
+    return float(delta_deflector[0]), float(delta_deflector[1])
+
+def validate_quantity(q, *, base=72000, threshold=4500):
+    """
+    Rules:
+      - If q < threshold: accept as-is.
+      - If q >= threshold: q must divide `base` exactly.
+        If not, snap to the nearest divisor of `base` that is >= threshold.
+
+    Returns (validated_value, message)
+      - message is None when no snap was needed.
+    """
+    # Coerce to int if a float was passed (divisibility is integer-based)
+    q = int(round(q))
+
+    if q < threshold:
+        return q, None
+
+    if base % q == 0:
+        return q, None
+
+    # Build divisor set of `base` that are >= threshold
+    divs = set()
+    r = int(math.isqrt(base))
+    for i in range(1, r + 1):
+        if base % i == 0:
+            a, b = i, base // i
+            if a >= threshold: divs.add(a)
+            if b >= threshold: divs.add(b)
+
+    if not divs:
+        # Fallback (shouldn't happen for 72000 with threshold=4500)
+        snapped = threshold
+    else:
+        # Nearest divisor; tie → prefer the larger one
+        snapped = min(divs, key=lambda d: (abs(d - q), -d))
+
+    msg = f"{q} is not valid; snapping to {snapped} (nearest divisor of {base}Hz precession frequency synchronisation)."
+    return snapped, msg
