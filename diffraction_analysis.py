@@ -1,13 +1,13 @@
 import cv2
-import matplotlib.pyplot as plt
 from tqdm import tqdm
-from matplotlib.patches import Circle
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-
 from scipy.spatial import cKDTree
 from sklearn.cluster import DBSCAN
 import math
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import hsv_to_rgb
+from matplotlib.patches import Circle
 
 
 #from utilities import create_circular_mask
@@ -650,7 +650,6 @@ def get_spot_positions(image,threshold=0,host="192.168.51.3",model_name="spot_se
     return output
 
 def run(host="192.168.51.3"):
-    import cv2 as cv2
 
     image = cv2.imread(r"C:\Users\robert.hooley\Documents\Coding\Datasets for development\filename26.tiff",cv2.IMREAD_UNCHANGED)
 
@@ -660,4 +659,234 @@ def run(host="192.168.51.3"):
 
     plot_result(results[0], detection,image=image, title="Basis vector detection")
 
-run()
+
+
+def annular_angle_map(
+    data4d: np.ndarray,
+    r_inner: float,
+    r_outer: float,
+    *,
+    center: tuple[float, float] | None = None,
+    angle_bins: int = 180,
+    log_intensity: bool = False,
+    vmin_percentile: float = 1.0,
+    vmax_percentile: float = 99.0,
+    min_value=1.0,
+    print_progress: bool = True,
+    # debug / plotting controls
+    dp_index: tuple[int, int] | None = None,   # (sy,sx) to show a DP with mask
+    log_dp: bool = True,
+    mask_alpha: float = 0.35,
+    show_plots: bool = True,
+    title: str | None = None,
+    wheel_side: str = "right",                 # "right" or "left"
+    wheel_px: int = 140,
+    wheel_margin: float = 0.02,
+) -> tuple[np.ndarray, dict, tuple[plt.Figure, plt.Axes, plt.Axes] | None, tuple[plt.Figure, plt.Axes] | None]:
+    """
+    One-stop function:
+      1) Computes RGB scan image from 4D-STEM (Sy,Sx,Ky,Kx)
+         - brightness = annulus total intensity
+         - hue = angle bin with maximum intensity within the annulus
+      2) Optionally plots:
+         - RGB image with an external colorwheel legend
+         - One diffraction pattern with annulus mask overlay
+
+    Returns
+    -------
+    rgb : (Sy,Sx,3) float32 in [0,1]
+    debug : dict (includes annulus_mask, annulus_total, argmax_bin, center, etc.)
+    fig_rgb_tuple : (fig, ax_img, ax_wheel) or None
+    fig_dp_tuple  : (fig, ax_dp) or None
+    """
+    if data4d.ndim != 4:
+        raise ValueError(f"data4d must be 4D (Sy,Sx,Ky,Kx). Got shape {data4d.shape}")
+
+    Sy, Sx, Ky, Kx = data4d.shape
+    if center is None:
+        cy = (Ky - 1) / 2.0
+        cx = (Kx - 1) / 2.0
+    else:
+        cy, cx = center
+
+    if print_progress:
+        print(f"[annular] data shape: (Sy,Sx,Ky,Kx)=({Sy},{Sx},{Ky},{Kx})")
+        print(f"[annular] center=(cy,cx)=({cy:.3f},{cx:.3f}), r_inner={r_inner}, r_outer={r_outer}, bins={angle_bins}")
+
+    # Detector polar coordinates
+    yy, xx = np.indices((Ky, Kx), dtype=np.float32)
+    dy = yy - cy
+    dx = xx - cx
+    rr = np.sqrt(dy * dy + dx * dx)
+    theta = np.arctan2(dy, dx)  # [-pi, pi]
+
+    annulus_mask = (rr >= r_inner) & (rr <= r_outer)
+    if not np.any(annulus_mask):
+        raise ValueError("Annulus mask is empty. Check r_inner/r_outer/center.")
+
+    M = int(np.count_nonzero(annulus_mask))
+    if print_progress:
+        print(f"[annular] annulus pixels: {M} / {Ky*Kx} ({100*M/(Ky*Kx):.2f}%)")
+
+    # Flatten annulus pixels
+    theta_a = theta[annulus_mask].astype(np.float32)  # (M,)
+    # Angle -> bins
+    u = (theta_a + np.pi) / (2.0 * np.pi)  # [0,1)
+    bin_idx = np.floor(u * angle_bins).astype(np.int32)
+    bin_idx = np.clip(bin_idx, 0, angle_bins - 1)
+
+    if print_progress:
+        print("[annular] building binning matrix...")
+    bin_mat = np.zeros((M, angle_bins), dtype=np.float32)
+    bin_mat[np.arange(M), bin_idx] = 1.0
+
+    if print_progress:
+        print("[annular] extracting annulus intensities (reshape)...")
+    annulus_vals = data4d[:, :, annulus_mask].reshape(Sy * Sx, M).astype(np.float32)
+
+    if print_progress:
+        print("[annular] summing per-angle-bin (matmul)...")
+    bin_sums = annulus_vals @ bin_mat  # (Sy*Sx, angle_bins)
+
+    if print_progress:
+        print("[annular] computing argmax angle + total intensity...")
+    argmax_bin = np.argmax(bin_sums, axis=1).astype(np.int32)
+    annulus_total = np.sum(bin_sums, axis=1).astype(np.float32)
+
+    if print_progress:
+        print("[annular] normalizing brightness...")
+    v = np.log1p(annulus_total) if log_intensity else annulus_total
+    lo = np.percentile(v, vmin_percentile)
+    hi = np.percentile(v, vmax_percentile)
+    if hi <= lo:
+        hi = lo + 1e-6
+    v_norm = (min_value + (1.0 - min_value) *
+              np.clip((v - lo) / (hi - lo), 0.0, 1.0)).astype(np.float32)
+
+    if print_progress:
+        print("[annular] mapping HSV->RGB...")
+    h = (argmax_bin.astype(np.float32) + 0.5) / float(angle_bins)
+    s = np.ones_like(h, dtype=np.float32)
+    hsv = np.stack([h, s, v_norm], axis=1)
+    rgb = hsv_to_rgb(hsv).reshape(Sy, Sx, 3).astype(np.float32)
+
+    debug = {
+        "center": (cy, cx),
+        "r_inner": float(r_inner),
+        "r_outer": float(r_outer),
+        "angle_bins": int(angle_bins),
+        "annulus_mask": annulus_mask,                    # (Ky,Kx)
+        "annulus_total": annulus_total.reshape(Sy, Sx),  # (Sy,Sx)
+        "argmax_bin": argmax_bin.reshape(Sy, Sx),        # (Sy,Sx)
+        # NOTE: omit bin_sums by default to keep memory sane
+    }
+
+    fig_rgb_tuple = None
+    fig_dp_tuple = None
+
+    if show_plots:
+        # --- Plot RGB with external colorwheel ---
+        fig = plt.figure()
+        ax_img = fig.add_subplot(1, 1, 1)
+        ax_img.imshow(rgb)
+        ax_img.set_xticks([])
+        ax_img.set_yticks([])
+        ax_img.set_title(title or "Annular max-angle hue / annulus intensity value")
+
+        # Make room for wheel
+        if wheel_side.lower() == "right":
+            fig.subplots_adjust(right=0.82)
+            wheel_left = 0.84 + wheel_margin
+        elif wheel_side.lower() == "left":
+            fig.subplots_adjust(left=0.18)
+            wheel_left = 0.02 + wheel_margin
+        else:
+            raise ValueError("wheel_side must be 'right' or 'left'")
+
+        ax_w = fig.add_axes([wheel_left, 0.02 + wheel_margin, 0.14, 0.14])
+
+        L = int(wheel_px)
+        gy, gx = np.indices((L, L), dtype=np.float32)
+        gc = (L - 1) / 2.0
+        gdx = gx - gc
+        gdy = gy - gc
+        gr = np.sqrt(gdx * gdx + gdy * gdy)
+        gtheta = np.arctan2(gdy, gdx)
+
+        inside = gr <= gc
+        gu = (gtheta + np.pi) / (2.0 * np.pi)
+        gh = (gu % 1.0).astype(np.float32)
+        gs = np.ones_like(gh, dtype=np.float32)
+        gv = np.ones_like(gh, dtype=np.float32)
+
+        wheel = np.zeros((L, L, 3), dtype=np.float32)
+        wheel_inside = hsv_to_rgb(np.stack([gh, gs, gv], axis=-1))
+        wheel[inside] = wheel_inside[inside]
+
+        ax_w.imshow(wheel)
+        ax_w.set_xticks([])
+        ax_w.set_yticks([])
+        ax_w.set_title("Angle", fontsize=9)
+
+        fig_rgb_tuple = (fig, ax_img, ax_w)
+
+        # --- Plot one DP with annulus mask overlay (optional) ---
+        if dp_index is None:
+            dp_index = (Sy // 2, Sx // 2)
+        sy0, sx0 = dp_index
+
+        dp = data4d[sy0, sx0].astype(np.float32)
+        show = np.log1p(dp) if log_dp else dp
+
+        fig2, ax2 = plt.subplots(1, 1)
+        ax2.imshow(show, cmap="gray")
+        ax2.set_title(f"DP @ (sy={sy0}, sx={sx0}) with annulus mask")
+        ax2.set_xticks([])
+        ax2.set_yticks([])
+
+        if dp_index is None:
+            dp_index = (Sy // 2, Sx // 2)
+        sy0, sx0 = dp_index
+
+        dp = data4d[sy0, sx0].astype(np.float32)
+        show = np.log1p(dp) if log_dp else dp
+
+        fig2, ax2 = plt.subplots(1, 1)
+        ax2.imshow(show, cmap="gray")
+        ax2.set_title(f"DP @ (sy={sy0}, sx={sx0}) with annulus segments")
+        ax2.set_xticks([])
+        ax2.set_yticks([])
+
+        # Build a per-pixel bin index map on the detector for visualization
+        # (outside annulus = -1)
+        u_full = (theta + np.pi) / (2.0 * np.pi)  # [0,1)
+        seg_map = np.full((Ky, Kx), -1, dtype=np.int32)
+        seg_map[annulus_mask] = np.clip(np.floor(u_full[annulus_mask] * angle_bins).astype(np.int32), 0, angle_bins - 1)
+
+        # Color each segment by its hue (same mapping as the scan image)
+        h = (seg_map.astype(np.float32) + 0.5) / float(angle_bins)
+        h = np.mod(h, 1.0)
+        s = np.ones_like(h, dtype=np.float32)
+        v = np.ones_like(h, dtype=np.float32)
+        seg_rgb = hsv_to_rgb(np.stack([h, s, v], axis=-1)).astype(np.float32)
+
+        # RGBA overlay: only show within annulus
+        seg_rgba = np.zeros((Ky, Kx, 4), dtype=np.float32)
+        seg_rgba[..., :3] = seg_rgb
+        seg_rgba[..., 3] = mask_alpha * (seg_map >= 0).astype(np.float32)
+
+        ax2.imshow(seg_rgba)
+
+        # Draw inner/outer circles for clarity
+        ax2.add_patch(Circle((cx, cy), r_inner, fill=False, linewidth=1.2))
+        ax2.add_patch(Circle((cx, cy), r_outer, fill=False, linewidth=1.2))
+
+        fig_dp_tuple = (fig2, ax2)
+
+        plt.show()
+
+    if print_progress:
+        print("[annular] wrapper complete.")
+
+    return rgb, debug, fig_rgb_tuple, fig_dp_tuple
+
