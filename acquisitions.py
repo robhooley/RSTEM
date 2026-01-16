@@ -716,3 +716,65 @@ def acquire_precession_tilt_series(upper_limit_degrees):
         annotated_images.append(image)
 
     return annotated_images,angle_list
+
+"""def measure_z_offset(set_z=False):
+
+    z_offset = 0
+
+
+    self._tilt_wobbler_value = 0
+
+
+
+    if self._state.gui.stem_adjustments.wobbler_direction.get() == types.AxisDirection.X:
+        self._tilt_factors = ((0.0, 0.0), (1.0, 0.0))
+    else:
+        self._tilt_factors = ((0.0, 0.0), (0.0, 1.0))
+
+    self._fov = self._state.gui.scanning.fov.get()
+    n = self._state.gui.scanning.pixel_count.get().value
+    self._n = n
+
+    angle = self._state.gui.stem_adjustments.wobbler_angle.get() * 1e-3
+    api.scanning.set_precession_angle(angle)
+    api.scanning.set_precession_frequency(0)
+    self._init_precession_heights = api.scanning.get_precession_height_correction()
+    api.scanning.set_precession_height_correction([0, 0, 0, 0])
+
+    rectangle = (0, 0, n, n)
+        self._total_pixels = n ** 2
+        self._shape = (n, n)
+
+        while self._running:
+            # do not use continuous acquisition, otherwise there might be big delay between cache and data
+            scan_id = acquisition.start_multi_series(
+                api=self._state.api,
+                pixel_time=self._state.gui.scanning.pixel_time.get() * 1e-6,
+                rectangle=self._rectangle,
+                total_size=self._n,
+                frames=1,
+                detectors=[DetectorType.BF],
+                tilt_factors=self._tilt_factors,
+            )
+
+            if scan_id is None:
+                raise RuntimeError("Failed to start tilt wobbling scan.")
+
+            _, data = self._state.binary_client.get_item(scan_id, self._total_pixels * len(self._tilt_factors))
+            if "stem" not in data:
+                raise RuntimeError("No stem data in the scan result.")
+            imgs = data["stem"]["BF"].reshape(len(self._tilt_factors), self._shape[0], self._shape[1])
+
+            shift_fov = np.array(self._fov * np.array(self._rectangle[2:4]) / self._n)
+            shift = shift_measurements.get_offset_of_pictures(imgs[0], imgs[1], shift_fov)
+
+            fact = np.array(self._tilt_factors[1])
+            directional_shift: float = np.sum(shift * fact / np.sum(fact ** 2))
+            z = directional_shift / (max(self._state.gui.stem_adjustments.wobbler_angle.get(), 1.0) * 1e-3)  # in um
+
+
+    if set_z:
+        new_z = self._state.gui.stage.z.get() + z
+        self._state.gui.stage.z.set(new_z, set_signal=True)
+
+    return z"""
