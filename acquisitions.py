@@ -33,7 +33,7 @@ if find_spec("RSTEM.app_context") is not None:
         collect_metadata,
         crop_center_square,
         validate_quantity
-    )
+        )
     from RSTEM.analysis import (
     align_image_series,
     get_spot_positions
@@ -385,30 +385,6 @@ def acquire_STEM(fov=None, pixel_time=None, num_pixels=None, scan_rotation_deg=N
     return output, metadata
 
 
-#tested ok
-def save_STEM(image,metadata=None,name=None,folder=None):
-    """Parameters
-    image: single array to be saved as a .tiff image
-    metadata : optional dictionary to be saved as json
-    name: optional user defined filename, otherwise will be called STEM
-    folder: optional user defined folder, otherwise will show UI to select"""
-    if folder == None:
-        folder = g.diropenbox("Enter save location","Enter save location")
-        folder + "\\"
-    if name == None:
-        num_files_in_dir = len(fnmatch.filter(os.listdir(folder), '*.tiff'))
-        name = f"STEM000{num_files_in_dir+1}" #should increment the image number
-    name = name+".tiff"
-    filename = str(folder+"\\"+name)
-    print(f"Saving {name} to {folder}")
-    cv2.imwrite(filename,image)
-
-    if metadata is not None:
-        metadata_name = folder+"\\" + f"{name}_metadata.json"
-        open_json = open(metadata_name, "w")
-        json.dump(metadata, open_json, indent=6)
-        open_json.close()
-
 
 #TODO REFACTORED
 def acquire_series(num_frames=10,pixel_time=None,num_pixels=None):
@@ -421,7 +397,7 @@ def acquire_series(num_frames=10,pixel_time=None,num_pixels=None):
     if pixel_time==None:
         pixel_time = app.scanning.get_pixel_time()
     if num_pixels == None:
-        num_pixels = app.scaning.get_pixel_count().value
+        num_pixels = app.scanning.get_pixel_count().value
 
 
     scan = app.acquisition.acquire_stem(pixel_time=pixel_time, total_size=num_pixels, frames=num_frames,
@@ -632,12 +608,26 @@ def drift_corrected_imaging(num_frames=10, pixel_time=None, num_pixels=None, hos
     return results
 
 #TODO REFACTORED why not working?
-def point_acquisition(pixel_offsets=None,dwell_time=None,return_metadata=True):
+def point_acquisition(pixel_offsets=None,dwell_time=None,return_metadata=True,set_off_axis_after=False):
 
     app = get_app()
     N=1
 
+    bf_in = app.api.stem_detector.get_is_inserted(DT.BF)
+    haadf_in = app.api.stem_detector.get_is_inserted(DT.HAADF)
+    app.scanning.set_off_axis(False)
+    if bf_in or haadf_in:
+        if bf_in:
+            app.detectors.stem.insert_bf(False)
+        if haadf_in:
+            app.detectors.stem.insert_df(False)
+
+
+
     overview = app.scanning.get_pixel_count().value
+
+    if dwell_time is None:
+        dwell_time = app.detectors.camera.get_exposure()*1e-3 #milliseconds to seconds
 
     if pixel_offsets == None: #use center pixel
         rectangle = [overview/2,overview/2,N,N]
@@ -647,6 +637,8 @@ def point_acquisition(pixel_offsets=None,dwell_time=None,return_metadata=True):
     pointer = app.acquisition.acquire_camera(pixel_time=dwell_time, total_size=overview, frames=1, rectangle=rectangle,precession_enabled=None)
     image = pointer.get_frame()
     camera_data = image.camera[0][0]
+    if set_off_axis_after:
+        app.scanning.set_off_axis(True)
     if return_metadata:
         metadata = collect_metadata(acquisition_type="4D")
         return camera_data,metadata
@@ -717,64 +709,65 @@ def acquire_precession_tilt_series(upper_limit_degrees):
 
     return annotated_images,angle_list
 
-"""def measure_z_offset(set_z=False):
 
-    z_offset = 0
+def acquire_projection_series(lower_angle,higher_angle):
 
+    """Acquires a series of precession diffraction patterns from 0 to the max angle in 0.1 degree steps"""
 
-    self._tilt_wobbler_value = 0
+    app = get_app()
+    filepath = g.diropenbox("Select directory to save series","Save location")
+    beam_size = app.optics.get_diameter()
 
+    app.scanning.set_fov(beam_size*2)
+    pattern_list = []
 
+    angle_list = list(np.arange(lower_angle,higher_angle,0.01))
+    print(angle_list*1e3)
+    bf_in = app.api.stem_detector.get_is_inserted(DT.BF)
+    haadf_in = app.api.stem_detector.get_is_inserted(DT.HAADF)
+    app.scanning.set_off_axis(False)
+    if bf_in or haadf_in:
+        if bf_in:
+            app.detectors.stem.insert_bf(False)
+        if haadf_in:
+            app.detectors.stem.insert_df(False)
 
-    if self._state.gui.stem_adjustments.wobbler_direction.get() == types.AxisDirection.X:
-        self._tilt_factors = ((0.0, 0.0), (1.0, 0.0))
-    else:
-        self._tilt_factors = ((0.0, 0.0), (0.0, 1.0))
+    scan_width_px = 8
 
-    self._fov = self._state.gui.scanning.fov.get()
-    n = self._state.gui.scanning.pixel_count.get().value
-    self._n = n
+    for i in angle_list:
+        print(f"Current precession angle {i} degrees")
+        #app.api.scanning.set_precession_angle(radians)
+        app.optics.set_camera_angle(i)
+        reader = app.acquisition.acquire_camera(pixel_time=1e-3,total_size=scan_width_px,precession_enabled=True)
 
-    angle = self._state.gui.stem_adjustments.wobbler_angle.get() * 1e-3
-    api.scanning.set_precession_angle(angle)
-    api.scanning.set_precession_frequency(0)
-    self._init_precession_heights = api.scanning.get_precession_height_correction()
-    api.scanning.set_precession_height_correction([0, 0, 0, 0])
+        # Retrieve first row to infer dtype/shape, then pre-allocate array
+        first_row = reader.get_lines(1)
+        row_block = first_row.camera  # shape: (scan_width_px, camY, camX)
+        if row_block.ndim != 4 or row_block.shape[1] != scan_width_px:
+            raise RuntimeError(f"Unexpected cameraData shape: {row_block.shape}")
+        camY, camX = row_block.shape[2], row_block.shape[3]  # read camera size from first row of data
+        dtype = row_block.dtype  # keep native dtype to avoid copies/conversions
+        image_array = np.empty((scan_width_px, scan_width_px, camY, camX), dtype=dtype,
+                               order="C")  # Pre-allocate target 4D array: (scanY, scanX, camY, camX)
+        # Assign the first row (index 0) directly
+        image_array[0, :, :, :] = row_block  # vectorized write
+        # Retrieve remaining rows
+        for j in range(1, scan_width_px):
+            data = reader.get_lines(1)
+            row_block = data.camera  # expected shape: (scan_width_px, camY, camX)
+            image_array[j, :, :, :] = row_block  # assert row_block.shape == (scan_width_px, camY, camX)
+        reader.close()
 
-    rectangle = (0, 0, n, n)
-        self._total_pixels = n ** 2
-        self._shape = (n, n)
+        single_pattern = np.sum(image_array,axis=(0,1))
+        pattern_list.append(single_pattern)
 
-        while self._running:
-            # do not use continuous acquisition, otherwise there might be big delay between cache and data
-            scan_id = acquisition.start_multi_series(
-                api=self._state.api,
-                pixel_time=self._state.gui.scanning.pixel_time.get() * 1e-6,
-                rectangle=self._rectangle,
-                total_size=self._n,
-                frames=1,
-                detectors=[DetectorType.BF],
-                tilt_factors=self._tilt_factors,
-            )
+    annotated_images = []
+    for i in range(len(pattern_list)):
+        image = pattern_list[i].astype(np.uint16)
+        angle = angle_list[i]*1e3 #convert to mrad here
+        filename = filepath+f"\\Projection_angle {angle} mrad.tiff"
+        cv2.imwrite(filename,image)
+        annotated_images.append(image)
 
-            if scan_id is None:
-                raise RuntimeError("Failed to start tilt wobbling scan.")
+    return annotated_images,angle_list
 
-            _, data = self._state.binary_client.get_item(scan_id, self._total_pixels * len(self._tilt_factors))
-            if "stem" not in data:
-                raise RuntimeError("No stem data in the scan result.")
-            imgs = data["stem"]["BF"].reshape(len(self._tilt_factors), self._shape[0], self._shape[1])
-
-            shift_fov = np.array(self._fov * np.array(self._rectangle[2:4]) / self._n)
-            shift = shift_measurements.get_offset_of_pictures(imgs[0], imgs[1], shift_fov)
-
-            fact = np.array(self._tilt_factors[1])
-            directional_shift: float = np.sum(shift * fact / np.sum(fact ** 2))
-            z = directional_shift / (max(self._state.gui.stem_adjustments.wobbler_angle.get(), 1.0) * 1e-3)  # in um
-
-
-    if set_z:
-        new_z = self._state.gui.stage.z.get() + z
-        self._state.gui.stage.z.set(new_z, set_signal=True)
-
-    return z"""
