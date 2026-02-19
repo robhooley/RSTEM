@@ -41,8 +41,6 @@ else:
 config = Config(r"C:\Users\stem\Documents\Rob_coding\ExpertPI-0.5.1\config.yml") # path to config file if changes have been made, otherwise comment out and use default
 
 
-
-
 def get_spot_positions(image,threshold=0,host=None,model_name="spot_segmentation",logging=True):
     """
     Run a ML spot segmentation model on a diffraction pattern,
@@ -770,3 +768,26 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
             json.dump(metadata, jf, indent=2)
     print("Export completed")
 
+#tested ok
+def save_STEM(image,metadata=None,name=None,folder=None):
+    """Parameters
+    image: single array to be saved as a .tiff image
+    metadata : optional dictionary to be saved as json
+    name: optional user defined filename, otherwise will be called STEM
+    folder: optional user defined folder, otherwise will show UI to select"""
+    if folder == None:
+        folder = g.diropenbox("Enter save location","Enter save location")
+        folder + "\\"
+    if name == None:
+        num_files_in_dir = len(fnmatch.filter(os.listdir(folder), '*.tiff'))
+        name = f"STEM000{num_files_in_dir+1}" #should increment the image number
+    name = name+".tiff"
+    filename = str(folder+"\\"+name)
+    print(f"Saving {name} to {folder}")
+    cv2.imwrite(filename,image)
+
+    if metadata is not None:
+        metadata_name = folder+"\\" + f"{name}_metadata.json"
+        open_json = open(metadata_name, "w")
+        json.dump(metadata, open_json, indent=6)
+        open_json.close()
