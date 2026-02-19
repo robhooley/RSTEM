@@ -674,13 +674,12 @@ def annular_angle_map(
     vmax_percentile: float = 99.0,
     min_value=1.0,
     print_progress: bool = True,
-    # debug / plotting controls
     dp_index: tuple[int, int] | None = None,   # (sy,sx) to show a DP with mask
     log_dp: bool = True,
     mask_alpha: float = 0.35,
     show_plots: bool = True,
     title: str | None = None,
-    wheel_side: str = "right",                 # "right" or "left"
+    wheel_side: str = "right",
     wheel_px: int = 140,
     wheel_margin: float = 0.02,
 ) -> tuple[np.ndarray, dict, tuple[plt.Figure, plt.Axes, plt.Axes] | None, tuple[plt.Figure, plt.Axes] | None]:
