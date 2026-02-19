@@ -1,35 +1,31 @@
-import os
 import json
-import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List, Tuple
-from importlib.util import find_spec
+from typing import  Dict, Any
 from datetime import datetime
-import shutil
 import tempfile
-from tqdm import tqdm
-from time import sleep
-import matplotlib.pyplot as plt
-
 import cv2
+import os
+import threading
+import tkinter as tk
+from typing import List, Tuple, Optional
 import numpy as np
+from importlib.util import find_spec
+import matplotlib.pyplot as plt
+from fontTools.misc.arrayTools import pointsInRect
 
 
-# --- imports that work both inside/outside the package ---
 if find_spec("RSTEM.app_context") is not None:
     from RSTEM.app_context import get_app
-    from RSTEM.acquisitions import (acquire_STEM,
-                                    point_acquisition)
+    from RSTEM.acquisitions import acquire_STEM, point_acquisition
     from RSTEM.utilities import normalise_to_8bit
 else:
     from app_context import get_app
-    from acquisitions import (acquire_STEM,
-                              point_acquisition)
-
+    from acquisitions import acquire_STEM, point_acquisition
     from utilities import normalise_to_8bit
 
 from expertpi.api import DetectorType as DT
+
 
 # -----------------------------
 # State
@@ -49,9 +45,51 @@ class AppState:
     camera_metadata: Optional[Dict[str, Any]] = None
     camera_metadata_path: Optional[str] = None             # metadata file produced by acquire_camera
 
-import tkinter as tk
-from typing import List, Tuple, Optional
-import numpy as np
+    # Stage
+    stage_positions: Optional[List[Dict[str, float]]] = None  # [{"x_um":..., "y_um":...}, ...]
+
+def annotate_points(image: np.ndarray, points, radius=4, thickness=2, draw_index=True):
+    """
+    image: 2D (H,W) or 3D (H,W,3) numpy array
+    points: list of (x,y) in pixel coords (float or int)
+    Returns: annotated BGR uint8 image (good for viewing/saving)
+    """
+    if image.ndim == 2:
+        # make a viewable 8-bit grayscale for overlay
+        if image.dtype == np.uint16:
+            vis = (image >> 8).astype(np.uint8)
+        elif image.dtype == np.uint8:
+            vis = image
+        else:
+            imgf = image.astype(np.float32)
+            imgf -= imgf.min()
+            mx = imgf.max()
+            if mx > 0:
+                imgf /= mx
+            vis = (imgf * 255).astype(np.uint8)
+
+        out = cv2.cvtColor(vis, cv2.COLOR_GRAY2BGR)
+    else:
+        # already color-ish; ensure uint8 for drawing
+        if image.dtype != np.uint8:
+            imgf = image.astype(np.float32)
+            imgf -= imgf.min()
+            mx = imgf.max()
+            if mx > 0:
+                imgf /= mx
+            out = (imgf * 255).astype(np.uint8)
+        else:
+            out = image.copy()
+
+    for i, (x, y) in enumerate(points):
+        xi, yi = int(round(x)), int(round(y))
+        cv2.circle(out, (xi, yi), radius, (0, 255, 255), thickness)  # yellow-ish in BGR
+        if draw_index:
+            cv2.putText(out, str(i), (xi + 6, yi - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+
+    return out
+
 
 
 def tk_ginput(
@@ -313,30 +351,38 @@ def acquire_camera_data(self) -> Tuple[np.ndarray, Dict[str, Any], str]:
     app.scanning.set_off_axis(False)
     sleep(0.2)  # stabilisation after deflector change"""
 
-    overview_stem = ((np.random.rand(1024, 1024) * 255).astype(np.uint8),{"Beam diameter (d50) (nm)":100,"Pixel size (nm)":2})#acquire_STEM()
-    #overview_stem = acquire_STEM()
+    #overview_stem = ((np.random.rand(1024, 1024) * 255).astype(np.uint8),{"Beam diameter (d50) (nm)":100,"Pixel size (nm)":2})#acquire_STEM()
+    overview_stem = acquire_STEM()
     stem_metadata = overview_stem[1]
     beam_size = stem_metadata["Beam diameter (d50) (nm)"]
     pixel_size_nm = stem_metadata["Pixel size (nm)"]
     beam_size_pixels = beam_size/pixel_size_nm
 
     if beam_size_pixels <2:
-        points = tk_ginput(self, overview_stem[0], n=-1, timeout=0)
+        points_float = tk_ginput(self, np.asarray(overview_stem[0][0]), n=-1, timeout=0)
+
     else:
-        points = tk_ginput(self, overview_stem[0], n=-1, timeout=0,disp_radius=beam_size_pixels/2)
+        points_float = tk_ginput(self, np.asarray(overview_stem[0][0]), n=-1, timeout=0,disp_radius=beam_size_pixels/2)
 
     imgs_list = []
     metadata_list = []
+
+    points = [(round(x), round(y)) for x, y in points_float] #convert to integers
+
     for i in range(len(points)):
+
+        points_corrected = (points[i][1], points[i][0])
+
         if i == 0:
-            img = ((np.random.rand(512, 512) * 255).astype(np.uint16),
-                   {"Beam diameter (d50) (nm)": 100, "Pixel size (nm)": 2}) #return metadata=True
-            #img = point_acquisition(points[i],return_metadata=True)
+            #img = ((np.random.rand(512, 512) * 255).astype(np.uint16),
+            #       {"Beam diameter (d50) (nm)": 100, "Pixel size (nm)": 2}) #return metadata=True
+
+            img = point_acquisition(points_corrected,return_metadata=True)
             imgs_list.append(img[0])
             metadata_list.append(img[1])
         else:
-            #img = point_acquisition(points[i],return_metadata=False)
-            img = (np.random.rand(512, 512) * 255).astype(np.uint16)
+            img = point_acquisition(points_corrected,return_metadata=False)
+            #img = (np.random.rand(512, 512) * 255).astype(np.uint16)
             imgs_list.append(img) #return_metadata=False
 
     meta = metadata_list[0]
@@ -344,8 +390,9 @@ def acquire_camera_data(self) -> Tuple[np.ndarray, Dict[str, Any], str]:
     tmp_dir = tempfile.mkdtemp(prefix="camera_acq_")
     meta_path = os.path.join(tmp_dir, "camera_metadata.json")
 
+    annotated_STEM = annotate_points(overview_stem[0][0],points,radius=int(beam_size_pixels/2),draw_index=True)
 
-    return imgs_list, meta, meta_path
+    return imgs_list, meta, meta_path,annotated_STEM
 
 
 # -----------------------------
@@ -391,15 +438,16 @@ def save_stem_payload(
         json.dump(metadata, f, indent=2)
 
 
-def save_camera_payload(img_list: list, meta: Dict[str, Any], out_dir: str) -> None:
+def save_camera_payload(img_list: list, meta: Dict[str, Any], out_dir: str,stem) -> None:
     """
     Saves camera image + metadata dict + copies the acquisition metadata file.
     """
     os.makedirs(out_dir, exist_ok=True)
 
+    annotated_stem = stem
+
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     base = f"CAMERA_{stamp}"
-    print(meta)
     for i in range(len(img_list)):
 
         cv2.imwrite(os.path.join(out_dir, f"{base}_{i}.tiff"), img_list[i])
@@ -407,7 +455,25 @@ def save_camera_payload(img_list: list, meta: Dict[str, Any], out_dir: str) -> N
     with open(os.path.join(out_dir, f"{base}_metadata.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
+    cv2.imwrite(os.path.join(out_dir, f"{base}_positions.tiff"), annotated_stem)
 
+def _stage_get_xy_um(app) -> Tuple[float, float]:
+    """
+    Returns (x_um, y_um). Stage API returns meters.
+    """
+    x_m, y_m = app.stage.get_xy()
+    return float(x_m) * 1e6, float(y_m) * 1e6  # m -> µm
+
+
+def _stage_set_xy_um(app, x_um: float, y_um: float) -> None:
+    """
+    Moves stage to (x_um, y_um). Stage API expects meters.
+    """
+    app.stage.set_xy(float(x_um) * 1e-6, float(y_um) * 1e-6)  # µm -> m
+
+
+def _fmt_pos_label(idx_1based: int, x_um: float, y_um: float) -> str:
+    return f"Position {idx_1based} - X={x_um:.2f} µm Y={y_um:.2f} µm"
 
 # -----------------------------
 # UI
@@ -415,7 +481,7 @@ def save_camera_payload(img_list: list, meta: Dict[str, Any], out_dir: str) -> N
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("STEM / Camera Control")
+        self.title("STEM Control")
         self.geometry("460x280")
         self.resizable(False, False)
 
@@ -445,6 +511,45 @@ class App(tk.Tk):
         )
         ttk.Button(frame, text="Save Camera", command=self.on_save_camera).grid(
             row=2, column=1, padx=6, pady=6, sticky="ew"
+        )
+
+        # Stage position
+        # -----------------------------
+        if self.state.stage_positions is None:
+            self.state.stage_positions = []
+
+        ttk.Separator(frame, orient="horizontal").grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=(12, 8)
+        )
+
+        ttk.Label(frame, text="Stage positions:").grid(
+            row=5, column=0, padx=6, pady=(0, 6), sticky="w"
+        )
+
+        self.stage_sel_var = tk.StringVar(value="")
+        self.stage_combo = ttk.Combobox(
+            frame,
+            textvariable=self.stage_sel_var,
+            values=[],
+            state="readonly",
+            width=38,
+        )
+        self.stage_combo.grid(row=5, column=1, padx=6, pady=(0, 6), sticky="ew")
+
+        # Row of buttons: Store / GoTo / Delete
+        ttk.Button(frame, text="Store position", command=self.on_stage_store).grid(
+            row=6, column=0, padx=6, pady=6, sticky="ew"
+        )
+        btns = ttk.Frame(frame)
+        btns.grid(row=6, column=1, padx=6, pady=6, sticky="ew")
+        btns.columnconfigure(0, weight=1)
+        btns.columnconfigure(1, weight=1)
+
+        ttk.Button(btns, text="Go to selected", command=self.on_stage_goto).grid(
+            row=0, column=0, padx=(0, 6), sticky="ew"
+        )
+        ttk.Button(btns, text="Delete selected", command=self.on_stage_delete).grid(
+            row=0, column=1, sticky="ew"
         )
 
         frame.columnconfigure(0, weight=1)
@@ -521,9 +626,10 @@ class App(tk.Tk):
             self.status_var.set("Acquiring Camera...")
             self.update_idletasks()
 
-            img, meta, meta_path = acquire_camera_data(self)
+            img, meta, meta_path,stem = acquire_camera_data(self)
 
             self.state.camera_image = img
+            self.state.camera_stem = stem
             self.state.camera_metadata = meta
             self.state.camera_metadata_path = meta_path
 
@@ -535,6 +641,7 @@ class App(tk.Tk):
     def on_save_camera(self):
         img = self.state.camera_image
         meta = self.state.camera_metadata
+        stem = self.state.camera_stem
 
 
         if img is None or meta is None:
@@ -549,18 +656,113 @@ class App(tk.Tk):
             self.status_var.set("Saving Camera...")
             self.update_idletasks()
 
-            save_camera_payload(img, meta, out_dir)
+            save_camera_payload(img, meta, out_dir,stem)
             del self.state.camera_image, self.state.camera_metadata  # flush the image info after saving
             self.status_var.set("Camera saved.")
         except Exception as e:
             self.status_var.set("Idle")
             messagebox.showerror("Save Camera failed", str(e))
 
+    def _refresh_stage_combo(self) -> None:
+        vals = []
+        for i, p in enumerate(self.state.stage_positions or []):
+            vals.append(_fmt_pos_label(i + 1, p["x_um"], p["y_um"]))
+
+        self.stage_combo["values"] = vals
+
+        # Keep selection sensible
+        if not vals:
+            self.stage_sel_var.set("")
+            return
+
+        cur = self.stage_sel_var.get()
+        if cur not in vals:
+            self.stage_sel_var.set(vals[-1])  # default to last stored
+
+    def on_stage_store(self):
+        try:
+            app = get_app()
+            x_um, y_um = _stage_get_xy_um(app)
+
+            self.state.stage_positions.append({"x_um": float(x_um), "y_um": float(y_um)})
+            self._refresh_stage_combo()
+
+            self.status_var.set(f"Stored {_fmt_pos_label(len(self.state.stage_positions), x_um, y_um)}")
+        except Exception as e:
+            messagebox.showerror("Store stage position failed", str(e))
+
+    def on_stage_goto(self):
+        try:
+            sel = self.stage_sel_var.get().strip()
+            if not sel:
+                messagebox.showwarning("No selection", "Select a stored stage position first.")
+                return
+
+            vals = list(self.stage_combo["values"])
+            if sel not in vals:
+                messagebox.showwarning("Invalid selection", "Selected entry is not in the list.")
+                return
+
+            idx = vals.index(sel)
+            p = self.state.stage_positions[idx]
+
+            self.status_var.set(f"Moving stage to Position {idx + 1}...")
+            self.update_idletasks()
+
+            app = get_app()
+            _stage_set_xy_um(app, p["x_um"], p["y_um"])
+
+            self.status_var.set(f"Stage moved to {_fmt_pos_label(idx + 1, p['x_um'], p['y_um'])}")
+        except Exception as e:
+            messagebox.showerror("Go to stage position failed", str(e))
+            self.status_var.set("Idle")
+
+    def on_stage_delete(self):
+        try:
+            sel = self.stage_sel_var.get().strip()
+            if not sel:
+                messagebox.showwarning("No selection", "Select a stored stage position first.")
+                return
+
+            vals = list(self.stage_combo["values"])
+            if sel not in vals:
+                messagebox.showwarning("Invalid selection", "Selected entry is not in the list.")
+                return
+
+            idx = vals.index(sel)
+
+            del self.state.stage_positions[idx]
+            self._refresh_stage_combo()
+
+            self.status_var.set("Deleted stage position.")
+        except Exception as e:
+            messagebox.showerror("Delete stage position failed", str(e))
+
+
+
 
 def run_ui():
     app = App()
     app.mainloop()
 
+_ui_thread = None
+
+def ui_saver():
+    """
+    Launch the UI in a background thread, so it shares the current interpreter's
+    sys.path and already-imported modules (avoids fresh-process import ordering).
+    Returns the thread object.
+    """
+    global _ui_thread
+    if _ui_thread is not None and _ui_thread.is_alive():
+        return _ui_thread
+
+    _ui_thread = threading.Thread(target=run_ui, daemon=True, name="ui_saver_thread")
+    _ui_thread.start()
+    return _ui_thread
+
 
 if __name__ == "__main__":
     run_ui()
+
+run_ui()
