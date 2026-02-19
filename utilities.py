@@ -28,8 +28,6 @@ if find_spec("RSTEM.app_context") is not None:
 else:
     from app_context import get_app
 
-
-
 #config = Config()
 config = Config(r"C:\Users\stem\Documents\Rob_coding\ExpertPI-0.5.1\config.yml") # path to config file if changes have been made, otherwise comment out and use default
 
@@ -254,6 +252,9 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
             diffraction_scaling = 1
 
         microscope_info["Camera acquisition size (px)"] = str(camera_pixels)
+        if diffraction_scaling != 1:
+            microscope_info["Original diffraction semiangle (mrad)"] = float(np.round(camera_angle*1e3,2))
+        microscope_info["Diffraction scaling factor"] = diffraction_scaling
         microscope_info["Diffraction semiangle (mrad)"] = float(np.round(camera_angle*1e3,2)/diffraction_scaling)
         microscope_info["Diffraction angle (mrad)"] = float(np.round(camera_angle*1e3*2,2)/diffraction_scaling)
         microscope_info["APerPixel (A/px)"] = float(1/pixel_size_inv_angstrom),
@@ -269,21 +270,23 @@ def collect_metadata(acquisition_type=None,scan_width_px=None,use_precession=Fal
             microscope_info["Predicted diffraction spot diameter (px)"] = float(np.round(pixel_radius,2)) #TODO check with ROI mode
 
     if use_precession==True:
+        precession_angle = app.api.scanning.get_precession_angle()
         microscope_info["Precession enabled"]=use_precession
-        microscope_info["precession angle (mrad)"] = app.api.scanning.get_precession_angle()*1e3
-        microscope_info["precession angle (deg)"] = float(np.round(np.rad2deg(microscope_info["precession angle (mrad)"]/1000),2))
+        microscope_info["precession angle (mrad)"] = float(np.round(precession_angle*1e3,2))
+        microscope_info["precession angle (deg)"] = float(np.round(np.rad2deg(precession_angle),2))
         microscope_info["Precession Frequency (kHz)"] = app.api.scanning.get_precession_frequency()/1e3
 
     if edx_enabled == True:
         edx_filter = app.api.xray.get_xray_filter_type()
         microscope_info["EDX detector filter"] = edx_filter.name
-        if num_frames is not None:
-            microscope_info["Number of frames"] = num_frames
-            if scan_height is not None:
-                microscope_info["Total scanning time (s)"] =num_frames*pixel_time*scan_width_px*scan_height
-            else:
-                microscope_info["Total scanning time (s)"] =num_frames*pixel_time*scan_width_px**2
-            microscope_info["Total series dose (e-A-2)"] = microscope_info["Probe dose rate (e-A-2s-1)"]* microscope_info["Total scanning time (s)"]
+
+    if num_frames is not None:
+        microscope_info["Number of frames"] = num_frames
+        if scan_height is not None:
+            microscope_info["Total scanning time (s)"] =num_frames*pixel_time*scan_width_px*scan_height
+        else:
+            microscope_info["Total scanning time (s)"] =num_frames*pixel_time*scan_width_px**2
+        microscope_info["Total series dose (e-A-2)"] = microscope_info["Probe dose rate (e-A-2s-1)"]* microscope_info["Total scanning time (s)"]
 
     xy = app.stage.get_xy()
     z = app.stage.get_z()
