@@ -21,9 +21,19 @@ config = Config(r"C:\Users\stem\Documents\Rob_coding\ExpertPI-0.5.1\config.yml")
 
 
 def view_all_models(host=None):
-    if host == None:
-        host = config.inference.host
+    """
+    View all available models on the TorchServe instance.
 
+    Parameters
+    ----------
+    host : str, optional
+        Host address for the TorchServe instance. If None, uses default.
+
+    Returns
+    -------
+    list of str
+        List of available model names.
+    """
     manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host, image_encoder='.tiff')
     models = manager.list_all_models() #gets all of the available models
     descriptions = []
@@ -33,11 +43,22 @@ def view_all_models(host=None):
         descriptions.append((description[0]["modelName"],description[0]["minWorkers"]))
     return descriptions
 
-def model_has_workers(model_name,host=None):
+def model_has_workers(model_name, host=None):
+    """
+    Check if a specific model has workers available.
 
-    if host == None:
-        host = config.inference.host
+    Parameters
+    ----------
+    model_name : str
+        Name of the model to check.
+    host : str, optional
+        Host address for the TorchServe instance. If None, uses default.
 
+    Returns
+    -------
+    bool
+        True if the model has workers available, False otherwise.
+    """
     manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
                                     image_encoder='.tiff')  # contacts the model manager
     model_status = manager.describe_model(model_name)
@@ -48,6 +69,28 @@ def model_has_workers(model_name,host=None):
     return has_workers
 
 def align_image_series(image_series, plot=False, host=None, model_name="TEMRegistration"):
+    """
+    Align a sequence of 2D images to the first frame using image registration.
+
+    Uses a TorchServe-hosted image-registration model to align a series of
+    images, compensating for drift and other shifts.
+
+    Parameters
+    ----------
+    image_series : list of numpy.ndarray
+        List of 2D images to align. The first image is used as the reference.
+    plot : bool, optional
+        Whether to plot the alignment results. Default is False.
+    host : str, optional
+        Host address for the TorchServe instance. Default is None.
+    model_name : str, optional
+        Name of the registration model to use. Default is "TEMRegistration".
+
+    Returns
+    -------
+    list of numpy.ndarray
+        List of aligned images, shifted to match the first frame.
+    """
     """
     Align a sequence of 2D images to the first frame using a TorchServe-hosted
     image-registration model and accumulate the aligned result.
@@ -208,12 +251,33 @@ def align_image_series(image_series, plot=False, host=None, model_name="TEMRegis
 
     return translated_list, summed_image, shifts
 
-def get_spot_positions(image,threshold=0,host=None,model_name="spot_segmentation",logging=True):
+def get_spot_positions(image, threshold=0, host=None, model_name="spot_segmentation", logging=True):
+    """
+    Run a ML spot segmentation model on a diffraction pattern.
 
-    if host == None:
-        host = config.inference.host
+    Extracts detected spot positions and their properties using a TorchServe-hosted
+    spot segmentation model.
 
-    try:
+    Parameters
+    ----------
+    image : numpy.ndarray
+        Input diffraction pattern image.
+    threshold : float, optional
+        Minimum confidence threshold for spot detection. Default is 0.
+    host : str, optional
+        Host address for the TorchServe instance. Default is None.
+    model_name : str, optional
+        Name of the segmentation model to use. Default is "spot_segmentation".
+    logging : bool, optional
+        Whether to enable logging. Default is True.
+
+    Returns
+    -------
+    tuple
+        (spot_positions, spot_properties) where spot_positions is a list of
+        (y, x) coordinates and spot_properties contains additional information
+        about each detected spot.
+    """
         manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
                                         image_encoder='.tiff')  # start server manager
         if not model_has_workers(model_name,host=host):
@@ -258,6 +322,30 @@ def get_spot_positions(image,threshold=0,host=None,model_name="spot_segmentation
 
 def rotational_correction(raw_shift, fov_x, fov_y, theta_deg, y_down=True):
     """
+    Map registration shift to deflector delta (physical units).
+
+    Converts image registration shifts (in normalized coordinates) to physical
+    deflector adjustments, accounting for scan rotation.
+
+    Parameters
+    ----------
+    raw_shift : tuple of float
+        (dx, dy) registration shift in normalized image coordinates.
+    fov_x : float
+        Field of view in x direction in meters.
+    fov_y : float
+        Field of view in y direction in meters.
+    theta_deg : float
+        Scan rotation angle in degrees.
+    y_down : bool, optional
+        Whether the y-axis points downward. Default is True.
+
+    Returns
+    -------
+    tuple of float
+        (delta_x, delta_y) deflector adjustments in physical units.
+    """
+    """
     Map registration shift (normalized image coords) to deflector delta (physical).
     raw_shift: (dx_norm, dy_norm) where +x=right, +y=down in image.
     Returns (Δdef_x, Δdef_y) to ADD to current deflector shift (already negated to oppose drift).
@@ -279,7 +367,38 @@ def rotational_correction(raw_shift, fov_x, fov_y, theta_deg, y_down=True):
     delta_deflector = -v_scan
     return float(delta_deflector[0]), float(delta_deflector[1])
 
-def drift_corrected_imaging(num_frames=10, pixel_time=None, num_pixels=None, host=None,model_name="TEMRegistration",logging=False):  # TODO full refactor needed
+def drift_corrected_imaging(num_frames=10, pixel_time=None, num_pixels=None, host=None, model_name="TEMRegistration", logging=False):
+    """
+    Acquire a series of images with drift correction.
+
+    Uses image registration to correct for drift between frames, producing
+    a series of aligned images.
+
+    Parameters
+    ----------
+    num_frames : int, optional
+        Total number of frames to acquire (including seed frame). Default is 10.
+    pixel_time : float, optional
+        Dwell time per pixel in seconds. If None, uses current setting.
+    num_pixels : int, optional
+        Number of pixels for each image. If None, uses current setting.
+    host : str, optional
+        Host address for TorchServe instance.
+    model_name : str, optional
+        Name of the registration model to use. Default is "TEMRegistration".
+    logging : bool, optional
+        Whether to enable logging. Default is False.
+
+    Returns
+    -------
+    tuple
+        (aligned_series, metadata) where aligned_series is a list of drift-corrected
+        images and metadata contains acquisition parameters.
+
+    Notes
+    -----
+    TODO: Full refactor needed for better integration and error handling.
+    """
     """Parameters
     num_frames : integer number of frames to acquire (total, including the seed frame)
     pixel_time_us: pixel dwell time in microseconds; if None, read from UI
