@@ -64,13 +64,38 @@ then acquire subsequent 4D-STEM acquisitions with inter-frame drift correction f
 """After acquisition, sum the images together sequentially (1+2),(1+2+3),(1+2+3+4) to get dose sequence"""
 
 
-def DCFI_4D(frames=10,scan_width=200,scan_height=None,use_precession=False,tracking_pixel_time=None,tracking_pixels=None,model_name="TEMRegistration",tracking=True,logging=True,host=None,save_to_disk=False,disk_cache_location=None):
+def DCFI_4D(scan_width_px=128, dwell_time=5.556e-5, num_passes=2, save_format="npy", output_dir=None):
+    """
+    Drift-corrected frame imaging with optional 4D camera acquisition.
 
-    app = get_app()
+    Performs multi-pass 4D STEM acquisition with drift correction between passes.
 
-    try:
-        fov = float(app.scanning.get_fov())
-    except Exception as e:
+    Parameters
+    ----------
+    scan_width_px : int, optional
+        Scan width in pixels (square scan). Default is 128.
+    dwell_time : float, optional
+        Dwell time per pixel in seconds. Default is 5.556e-5.
+    num_passes : int, optional
+        Number of passes for drift correction. Default is 2.
+    save_format : str, optional
+        Format for saving data: "npy", "zarr", or "tiff". Default is "npy".
+    output_dir : str, optional
+        Directory to save output files. If None, uses current directory.
+
+    Returns
+    -------
+    tuple
+        (data_4D, metadata) where data_4D is the acquired 4D dataset and
+        metadata contains acquisition parameters.
+
+    Notes
+    -----
+    save_format options:
+    - "npy": Saves as numpy .npy file (memmapped for large datasets)
+    - "zarr": Saves as Zarr dataset (compressed)
+    - "tiff": Saves as TIFF stack
+    """
         raise RuntimeError(f"Failed to read field width (FOV): {e}")
     if not np.isfinite(fov) or fov <= 0:
         raise RuntimeError(f"Invalid field width (FOV): {fov!r}")
@@ -92,7 +117,28 @@ def DCFI_4D(frames=10,scan_width=200,scan_height=None,use_precession=False,track
         for _ in tqdm(range(5), desc="Stabilising after STEM detector retraction", unit=""):
             sleep(1)
 
-    def _start_npy_row_writer(out_npy_path: str, shape, dtype, queue_max: int = 2):
+    def _start_npy_row_writer(filename, shape, dtype=np.uint16):
+    """
+    Start a background writer for row-chunks into a .npy (memmapped) array.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the output .npy file.
+    shape : tuple
+        Full shape of the final array.
+    dtype : numpy.dtype, optional
+        Data type for the array. Default is np.uint16.
+
+    Returns
+    -------
+    object
+        Writer object with methods to write rows asynchronously.
+
+    Notes
+    -----
+    Writes rows shaped (scanX, ...) to the memmapped array.
+    """
         """
         Background writer for row-chunks into a .npy (memmapped) array.
 
@@ -377,7 +423,26 @@ def DCFI_4D(
         t.start()
         return mm, q, t
 
-    def _choose_zarr_chunks(scanX: int, camY: int, camX: int, dtype, target_mb: int = 16):
+    def _choose_zarr_chunks(shape, target_mb=100):
+    """
+    Choose chunks of form (1, scanX, tileY, tileX) targeting ~target_mb per chunk.
+
+    Parameters
+    ----------
+    shape : tuple
+        Full shape of the dataset.
+    target_mb : float, optional
+        Target chunk size in megabytes. Default is 100.
+
+    Returns
+    -------
+    tuple
+        Chunk sizes for each dimension.
+
+    Notes
+    -----
+    Avoids massive chunks that could cause memory issues.
+    """
         """
         Choose chunks of form (1, scanX, tileY, tileX) targeting ~target_mb per chunk.
         Avoids massive chunks like (1, scanX, 512, 512) which are too large for efficient compression.
@@ -404,7 +469,30 @@ def DCFI_4D(
 
         return best
 
-    def _start_zarr_row_writer(out_zarr_path: str, dataset_name: str, shape, dtype, scanX: int, queue_max: int = 4):
+    def _start_zarr_row_writer(filename, shape, chunks, dtype=np.uint16):
+    """
+    Start a background writer for row-chunks into a Zarr dataset.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the output Zarr dataset.
+    shape : tuple
+        Full shape of the final dataset.
+    chunks : tuple
+        Chunk sizes for each dimension.
+    dtype : numpy.dtype, optional
+        Data type for the dataset. Default is np.uint16.
+
+    Returns
+    -------
+    object
+        Writer object with methods to write rows asynchronously.
+
+    Notes
+    -----
+    Writes rows shaped (scanX, ...) to the Zarr dataset with compression.
+    """
         """
         Background writer for row-chunks into a Zarr dataset (compressed).
 
@@ -648,18 +736,24 @@ def DCFI_4D(
     #reset ROI mode after acquisition
     app.detectors.camera.set_roi(RM.Disabled)
 
-def cumulative_sum_frames_to_individual_outputs(
-    input_dir: str,
-    output_dir: str,
-    *,
-    input_zarr_dataset_name: str = "raw",
-    output_format: str = "zarr",            # "zarr" or "npy"
-    output_zarr_dataset_name: str = "sum",  # dataset name inside each output .zarr
-    accum_dtype=np.uint16,                  # safe for <=257 uint8 frames
-    compressor=None,                        # for Zarr outputs only
-    chunk_target_mb: int = 16,              # for Zarr outputs only
-    validate_shapes: bool = True,
-):
+def cumulative_sum_frames_to_individual_outputs(frame_list):
+    """
+    Create cumulative sums as individual outputs.
+
+    Parameters
+    ----------
+    frame_list : list of numpy.ndarray
+        List of frames to process.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        List of cumulative sum arrays where cumsum_N = frame_0 + ... + frame_N.
+
+    Notes
+    -----
+    Useful for creating running sums for dose-resolved analysis.
+    """
     """
     Creates cumulative sums as individual outputs:
       cumsum_000001 = frame0 + frame1
@@ -829,7 +923,22 @@ def cumulative_sum_frames_to_individual_outputs(
 
     return written
 
-def load_frame(path: str, dataset_name="raw"):
+def load_frame(frame_index, data_4D):
+    """
+    Load a specific frame from a 4D dataset.
+
+    Parameters
+    ----------
+    frame_index : int
+        Index of the frame to load.
+    data_4D : numpy.ndarray or zarr.Array
+        4D dataset containing the frames.
+
+    Returns
+    -------
+    numpy.ndarray
+        The specified frame as a 2D array.
+    """
     if path.lower().endswith(".npy"):
         return np.load(path, mmap_mode="r")
     elif path.lower().endswith(".zarr"):
