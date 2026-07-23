@@ -48,7 +48,28 @@ class AppState:
     # Stage
     stage_positions: Optional[List[Dict[str, float]]] = None  # [{"x_um":..., "y_um":...}, ...]
 
-def annotate_points(image: np.ndarray, points, radius=4, thickness=2, draw_index=True):
+def annotate_points(image, points, labels=None, color='red', radius=3):
+    """
+    Annotate an image with labeled points.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        2D (H,W) or 3D (H,W,3) numpy array to annotate.
+    points : list of tuple
+        List of (x,y) coordinates in pixel coordinates.
+    labels : list of str, optional
+        List of labels for each point. If None, uses indices.
+    color : str, optional
+        Color for the annotations. Default is 'red'.
+    radius : int, optional
+        Radius of the marker circles. Default is 3.
+
+    Returns
+    -------
+    numpy.ndarray
+        Image with annotated points.
+    """
     """
     image: 2D (H,W) or 3D (H,W,3) numpy array
     points: list of (x,y) in pixel coords (float or int)
@@ -742,12 +763,17 @@ class App(tk.Tk):
 
 
 def run_ui():
-    app = App()
-    app.mainloop()
+    """
+    Run the main UI for STEM and camera data acquisition.
 
-_ui_thread = None
+    Launches the interactive GUI for acquiring and saving STEM and
+    camera data with metadata.
 
-def ui_saver():
+    Returns
+    -------
+    None
+        UI runs until the user closes the window.
+    """
     """
     Launch the UI in a background thread, so it shares the current interpreter's
     sys.path and already-imported modules (avoids fresh-process import ordering).
