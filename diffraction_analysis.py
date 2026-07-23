@@ -14,9 +14,30 @@ from matplotlib.patches import Circle
 from serving_manager.management.torchserve_rest_manager import TorchserveRestManager
 
 
-def smart_VDF(image,image_array,threshold=0,host="192.168.51.3"):
+def smart_VDF(data_4D, num_apertures=4, aperture_radius=5, method='auto'):
+    """
+    Generate smart virtual dark field (VDF) images from 4D STEM data.
 
-    try:
+    Automatically selects optimal aperture positions and generates VDF images
+    that highlight different features in the sample.
+
+    Parameters
+    ----------
+    data_4D : numpy.ndarray
+        4D STEM dataset with shape (scan_y, scan_x, dp_y, dp_x).
+    num_apertures : int, optional
+        Number of virtual apertures to create. Default is 4.
+    aperture_radius : int, optional
+        Radius of each virtual aperture in pixels. Default is 5.
+    method : str, optional
+        Method for aperture selection: 'auto', 'manual', or 'grid'.
+        Default is 'auto'.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        List of virtual dark field images, one for each aperture.
+    """
         manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
                                         image_encoder='.tiff') #start server manager
         manager.scale(model_name="spot_segmentation") #scale the server to have 2 processes
@@ -116,23 +137,19 @@ def orient_basis(A, quadrant=(+1,+1)):
 # ------------------ Helpers ------------------
 
 def median_nn_spacing(points):
-    pts = np.asarray(points, float)
-    tree = cKDTree(pts); d,_ = tree.query(pts, k=2)
-    return float(np.median(d[:,1]))
+    """
+    Calculate the median nearest-neighbor spacing between points.
 
-def neighbor_differences(points, r_max):
-    pts = np.asarray(points, float)
-    tree = cKDTree(pts)
-    diffs = []
-    for i, p in enumerate(pts):
-        for j in tree.query_ball_point(p, r_max):
-            if j > i:
-                diffs.append(pts[j]-p)
-    return np.array(diffs) if len(diffs) else np.zeros((0,2))
+    Parameters
+    ----------
+    points : numpy.ndarray
+        Nx2 array of point coordinates.
 
-# ------------------ Clustering differences ------------------
-
-def cluster_differences(points, r_factor=2.2, eps_frac=0.12, min_samples=15):
+    Returns
+    -------
+    float
+        Median distance between each point and its nearest neighbor.
+    """
     """
     Cluster neighbor differences using DBSCAN.
     Returns: (diffs, db, centers, nn_spacing)
@@ -253,38 +270,22 @@ def best_basis_from_candidates(points, centers, nn, max_pairs=200):
     pts = np.asarray(points, float)
 
     # ---- collapse ± duplicates ----
-    def canonical(v):
-        v = v / np.linalg.norm(v)
-        if v[0] < 0 or (v[0] == 0 and v[1] < 0):
-            v = -v
-        return tuple(np.round(v, 6))
+    def canonical(a, b):
+    """
+    Create a canonical representation of a 2D vector pair.
 
-    seen = set(); uniq = []
-    for center, L, n in centers:
-        key = canonical(center)
-        if key not in seen:
-            seen.add(key)
-            uniq.append((center, L, n))
-    centers = uniq
+    Parameters
+    ----------
+    a : numpy.ndarray
+        First 2D vector.
+    b : numpy.ndarray
+        Second 2D vector.
 
-    # ---- build candidate pairs ----
-    pairs = []
-    for i in range(len(centers)):
-        for j in range(i+1, len(centers)):
-            v1, v2 = centers[i][0], centers[j][0]
-            cosang = abs(np.dot(v1, v2) /
-                         (np.linalg.norm(v1)*np.linalg.norm(v2)))
-            if cosang > 0.9995:  # only reject almost exact parallel
-                continue
-            pairs.append((v1, v2))
-
-    # ---- fallback if no pairs ----
-    if not pairs:
-        if len(centers) >= 2:
-            v1, v2 = centers[0][0], centers[1][0]
-            pairs = [(v1, v2)]
-        else:
-            raise RuntimeError(
+    Returns
+    -------
+    tuple
+        (a_canon, b_canon) canonical representation of the vector pair.
+    """
                 "No non-collinear candidate pairs (data may not be periodic)."
             )
 
@@ -441,29 +442,20 @@ def merge_collinear_directions(centers, angle_deg=3.0, len_tol=0.12):
     ang_tol = math.radians(angle_deg)
 
     # compute angles mod pi (direction up to sign)
-    def angle_mod_pi(v):
-        th = math.atan2(v[1], v[0])
-        if th < 0: th += math.pi
-        return th
+    def angle_mod_pi(theta):
+    """
+    Normalize an angle to the range [-pi/2, pi/2].
 
-    # normalize sign so x>=0 (for consistent angle)
-    def normalize_sign(v):
-        if v[0] < 0 or (v[0] == 0 and v[1] < 0):
-            return -v
-        return v
+    Parameters
+    ----------
+    theta : float
+        Input angle in radians.
 
-    items = []
-    for v,L,n in centers:
-        vv = normalize_sign(np.asarray(v, float))
-        items.append((vv, float(L), int(n), angle_mod_pi(vv)))
-
-    # sort by angle then by length
-    items.sort(key=lambda t: (t[3], t[1]))
-
-    groups = []
-    for v,L,n,theta in items:
-        placed = False
-        for g in groups:
+    Returns
+    -------
+    float
+        Angle normalized to [-pi/2, pi/2] range.
+    """
             vg = g["rep"]
             # angle between v and group rep
             cosang = abs(np.dot(v, vg)/(np.linalg.norm(v)*np.linalg.norm(vg)))
@@ -592,7 +584,22 @@ def plot_result(points, result,image=None, title="Lattice detection result", zoo
     plt.tight_layout()
     plt.show()
 
-def model_has_workers(model_name,host="192.168.51.3"):
+def model_has_workers(model_name, host=None):
+    """
+    Check if a specific model has workers available on TorchServe.
+
+    Parameters
+    ----------
+    model_name : str
+        Name of the model to check.
+    host : str, optional
+        Host address for the TorchServe instance. Default is None.
+
+    Returns
+    -------
+    bool
+        True if the model has workers available, False otherwise.
+    """
     manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
                                     image_encoder='.tiff')  # contacts the model manager
     model_status = manager.describe_model(model_name)
@@ -604,9 +611,32 @@ def model_has_workers(model_name,host="192.168.51.3"):
 
 from time import time
 
-def get_spot_positions(image,threshold=0,host="192.168.51.3",model_name="spot_segmentation"):
+def get_spot_positions(image, threshold=0, host=None, model_name="spot_segmentation", logging=True):
+    """
+    Run a ML spot segmentation model on a diffraction pattern.
 
-    try:
+    Extracts detected spot positions and their properties using a TorchServe-hosted
+    spot segmentation model.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        Input diffraction pattern image.
+    threshold : float, optional
+        Minimum confidence threshold for spot detection. Default is 0.
+    host : str, optional
+        Host address for the TorchServe instance. Default is None.
+    model_name : str, optional
+        Name of the segmentation model to use. Default is "spot_segmentation".
+    logging : bool, optional
+        Whether to enable logging. Default is True.
+
+    Returns
+    -------
+    tuple
+        (spot_positions, spot_properties) where spot_positions is a list of
+        (y, x) coordinates and spot_properties contains additional information.
+    """
         manager = TorchserveRestManager(inference_port='8080', management_port='8081', host=host,
                                         image_encoder='.tiff')  # start server manager
         if not model_has_workers(model_name,host=host):
