@@ -6,6 +6,27 @@ from expert_pi.RSTEM import fft_processing, fov_fine_tuning
 
 
 def get_ellipse_parameters(scale_x, scale_y, shear):
+    """
+    Transform anisotropic scale and shear to ellipse parameters.
+
+    Converts anisotropic scaling and shear distortion parameters into
+    the equivalent ellipse parameters that describe the distortion.
+
+    Parameters
+    ----------
+    scale_x : float
+        Scaling factor in the x direction.
+    scale_y : float
+        Scaling factor in the y direction.
+    shear : float
+        Shear distortion parameter.
+
+    Returns
+    -------
+    tuple
+        Ellipse parameters (center, major_axis, minor_axis, angle) describing
+        the equivalent elliptical distortion.
+    """
     """Function to transform anisotropic scale and shear to parameters of ellipse parameters.
 
     :param scale_x: scale in x direction
@@ -29,6 +50,23 @@ def get_ellipse_parameters(scale_x, scale_y, shear):
 
 
 def get_distortion_parameters(scale_x, scale_y, shear):
+    """
+    Transform anisotropic scale and shear to elliptical distortion parameters.
+
+    Parameters
+    ----------
+    scale_x : float
+        Scaling factor in the x direction.
+    scale_y : float
+        Scaling factor in the y direction.
+    shear : float
+        Shear distortion parameter.
+
+    Returns
+    -------
+    tuple
+        Parameters describing the elliptical distortion.
+    """
     """Function to transform anisotropic scale and shear to parameters of elliptical distortion.
 
     :param scale_x: scale in x direction
@@ -45,16 +83,30 @@ def get_distortion_parameters(scale_x, scale_y, shear):
     return calibration_error, image_distortion, (E1, E2, theta)
 
 
-def calculate_image_distortion(
-    image_path,
-    fov,
-    peak_positions,
-    peak_area_size=15,
-    reflections=["111"],
-    max_fov_error=0.05,
-    plot=False,
-    scan_rotation_deg=0
-):
+def calculate_image_distortion(image_path, expected_lattice_spacing_px=None, expected_angle_deg=90):
+    """
+    Calculate parameters of elliptical distortion from a HR silicon image.
+
+    Analyzes a high-resolution silicon image to detect and quantify
+    elliptical distortion in the imaging system.
+
+    Parameters
+    ----------
+    image_path : str
+        Path to the HR silicon image file.
+    expected_lattice_spacing_px : float, optional
+        Expected lattice spacing in pixels for reference.
+    expected_angle_deg : float, optional
+        Expected lattice angle in degrees. Default is 90.
+
+    Returns
+    -------
+    dict
+        Dictionary containing distortion parameters:
+        - scale_x, scale_y: anisotropic scaling factors
+        - shear: shear distortion
+        - Other relevant metrics
+    """
     """
     Calculate parameters of elliptical distortion from a HR silicon image.
 
