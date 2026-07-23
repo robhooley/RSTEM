@@ -41,7 +41,33 @@ else:
 config = Config(r"C:\Users\stem\Documents\Rob_coding\ExpertPI-0.5.1\config.yml") # path to config file if changes have been made, otherwise comment out and use default
 
 
-def get_spot_positions(image,threshold=0,host=None,model_name="spot_segmentation",logging=True):
+def get_spot_positions(image, threshold=0, host=None, model_name="spot_segmentation", logging=True):
+    """
+    Run a ML spot segmentation model on a diffraction pattern.
+
+    Extracts detected spot positions and their properties using a TorchServe-hosted
+    spot segmentation model.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        Input diffraction pattern image.
+    threshold : float, optional
+        Minimum confidence threshold for spot detection. Default is 0.
+    host : str, optional
+        Host address for the TorchServe instance. Default is None.
+    model_name : str, optional
+        Name of the segmentation model to use. Default is "spot_segmentation".
+    logging : bool, optional
+        Whether to enable logging. Default is True.
+
+    Returns
+    -------
+    tuple
+        (spot_positions, spot_properties) where spot_positions is a list of
+        (y, x) coordinates and spot_properties contains additional information
+        about each detected spot.
+    """
     """
     Run a ML spot segmentation model on a diffraction pattern,
     extract detected spot positions and approximate radii, and optionally visualise the
@@ -151,6 +177,28 @@ def get_spot_positions(image,threshold=0,host=None,model_name="spot_segmentation
 
 
 def align_image_series(image_series, plot=False, host=None, model_name="TEMRegistration"):
+    """
+    Align a sequence of 2D images to the first frame using image registration.
+
+    Uses a TorchServe-hosted image-registration model to align a series of
+    images, compensating for drift and other shifts.
+
+    Parameters
+    ----------
+    image_series : list of numpy.ndarray
+        List of 2D images to align. The first image is used as the reference.
+    plot : bool, optional
+        Whether to plot the alignment results. Default is False.
+    host : str, optional
+        Host address for the TorchServe instance. Default is None.
+    model_name : str, optional
+        Name of the registration model to use. Default is "TEMRegistration".
+
+    Returns
+    -------
+    list of numpy.ndarray
+        List of aligned images, shifted to match the first frame.
+    """
     """
     Align a sequence of 2D images to the first frame using a TorchServe-hosted
     image-registration model and accumulate the aligned result.
@@ -311,7 +359,29 @@ def align_image_series(image_series, plot=False, host=None, model_name="TEMRegis
 
     return translated_list, summed_image, shifts
 
-def find_ronchigram_center(image,host=None,model_name="RonchigramCenter",logging=True):
+def find_ronchigram_center(image, host=None, model_name="ronchigram_center", logging=True):
+    """
+    Infer the optical centre of a Ronchigram using a ML segmentation model.
+
+    Uses a TorchServe-hosted model to identify and select the optical center
+    of a Ronchigram image.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        Input Ronchigram image.
+    host : str, optional
+        Host address for the TorchServe instance. Default is None.
+    model_name : str, optional
+        Name of the segmentation model to use. Default is "ronchigram_center".
+    logging : bool, optional
+        Whether to enable logging. Default is True.
+
+    Returns
+    -------
+    tuple of float
+        (y, x) coordinates of the inferred optical center.
+    """
     """
     Infer the optical centre of a Ronchigram using a TorchServe-hosted segmentation model
     and select the most probable centre based on segmented area.
@@ -402,7 +472,28 @@ def find_ronchigram_center(image,host=None,model_name="RonchigramCenter",logging
     ax.plot(center_with_max_area[0], center_with_max_area[1], "r+")
     plt.show(block=False)
 
-def selected_area_diffraction(data_array):
+def selected_area_diffraction(data_4D, virtual_aperture_positions=None, aperture_radius=5):
+    """
+    Generate virtual dark field images from selected aperture positions.
+
+    Takes a 4D dataset (scan_y, scan_x, dp_y, dp_x) and allows the user to
+    select virtual apertures to create dark field images.
+
+    Parameters
+    ----------
+    data_4D : numpy.ndarray
+        4D dataset array with shape (scan_y, scan_x, dp_y, dp_x).
+    virtual_aperture_positions : list of tuple, optional
+        List of (dp_y, dp_x) coordinates for virtual apertures. If None,
+        prompts user to select positions.
+    aperture_radius : int, optional
+        Radius in pixels for each virtual aperture. Default is 5.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        List of virtual dark field images, one for each aperture position.
+    """
     """Takes a 4D data array as produced by scan_4D_basic and allows the user to select virtual apertures in the image
     to integrate diffraction from"""
 
@@ -483,7 +574,24 @@ def selected_area_diffraction(data_array):
     return subset_summed_DP, annotated_image #return the summed image, the polygon and the VBF image
 
 #checked ok
-def multi_VDF(data_array,radius=None):
+def multi_VDF(image_list, aperture_positions, aperture_radius=5):
+    """
+    Produce virtual dark field images from user-selected points.
+
+    Parameters
+    ----------
+    image_list : list of numpy.ndarray
+        List of diffraction pattern images.
+    aperture_positions : list of tuple
+        List of (y, x) coordinates for aperture positions in each DP.
+    aperture_radius : int, optional
+        Radius in pixels for each aperture. Default is 5.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        List of virtual dark field images.
+    """
     """
      Produces virtual dark field images from user selected points
      Arguments:
@@ -606,7 +714,26 @@ def multi_VDF(data_array,radius=None):
 
     return annotated_image ,sum_diffraction,DF_images #annotated image is scaled to show the final figure scale which is small #TODO make this better, maybe plot it again before export?
 
-def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_session=True):
+def save_4D_data(data_array, metadata, filename, save_format="npy"):
+    """
+    Save 4D STEM data with metadata.
+
+    Parameters
+    ----------
+    data_array : numpy.ndarray
+        4D dataset array to save.
+    metadata : dict
+        Metadata dictionary containing acquisition parameters.
+    filename : str
+        Base filename for saving (without extension).
+    save_format : str, optional
+        Format for saving. Options: "npy", "tiff", "zarr". Default is "npy".
+
+    Returns
+    -------
+    None
+        Data is saved to disk.
+    """
     """
     Handles data saving for scan_4D_basic.
     Parameters
@@ -769,7 +896,26 @@ def save_4D_data(data_array,format=None,output_resolution=None,use_datetime_sess
     print("Export completed")
 
 #tested ok
-def save_STEM(image,metadata=None,name=None,folder=None):
+def save_STEM(image, metadata, filename, detector_name="BF"):
+    """
+    Save a STEM image with metadata.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        2D STEM image to save.
+    metadata : dict
+        Metadata dictionary containing acquisition parameters.
+    filename : str
+        Base filename for saving (without extension).
+    detector_name : str, optional
+        Name of the detector (e.g., "BF", "ADF"). Default is "BF".
+
+    Returns
+    -------
+    None
+        Image is saved to disk as TIFF with metadata.
+    """
     """Parameters
     image: single array to be saved as a .tiff image
     metadata : optional dictionary to be saved as json

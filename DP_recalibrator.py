@@ -17,6 +17,24 @@ from PIL import Image, ImageTk
 
 def select_center_and_total_diffraction_angle(filepath):
     """
+    Select the center and total diffraction angle from a diffraction pattern.
+
+    Opens a GUI interface allowing the user to interactively select the center
+    position and measure the total diffraction angle from a diffraction pattern image.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the diffraction pattern image file.
+
+    Returns
+    -------
+    tuple
+        (center_coordinates, total_angle) where center_coordinates is a tuple
+        of (x, y) pixel coordinates and total_angle is the measured diffraction
+        angle in appropriate units.
+    """
+    """
     Opens a window to let the user click on the image to set the center position,
     enter a total diffraction angle, and confirm or reset the selection.
 
@@ -117,7 +135,22 @@ def select_center_and_total_diffraction_angle(filepath):
 
 
 def get_image_calibrations(filepath):
+    """
+    Get image calibration parameters.
 
+    Retrieves calibration information for diffraction pattern images.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the image file or directory containing calibration data.
+
+    Returns
+    -------
+    dict
+        Dictionary containing calibration parameters such as pixel size,
+        angle calibration, etc.
+    """
     #put im try except catch for Expi data, which has no origin or pixel size
 
 
@@ -181,11 +214,41 @@ def get_image_calibrations(filepath):
 
 # Function to calculate distance between two points
 def calculate_distance(x1, y1, x2, y2):
+    """
+    Calculate Euclidean distance between two points.
+
+    Parameters
+    ----------
+    x1, y1 : float
+        Coordinates of the first point.
+    x2, y2 : float
+        Coordinates of the second point.
+
+    Returns
+    -------
+    float
+        Euclidean distance between the two points.
+    """
     distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
     return distance
 
 # Function to update the image in the Tkinter window
-def update_image_display(image_center_x,image_center_y):
+def update_image_display(image_center_x, image_center_y):
+    """
+    Update the displayed image with current calibration.
+
+    Parameters
+    ----------
+    image_center_x : float
+        X coordinate of the image center in pixels.
+    image_center_y : float
+        Y coordinate of the image center in pixels.
+
+    Returns
+    -------
+    None
+        Updates the global display state.
+    """
     global img_displayed
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB for Tkinter display
     img_pil = Image.fromarray(img_rgb)  # Convert to PIL format
@@ -196,6 +259,23 @@ def update_image_display(image_center_x,image_center_y):
 
 
 def convert_distance(distance_px, unit, calibrations):
+    """
+    Convert a distance from pixels to calibrated units.
+
+    Parameters
+    ----------
+    distance_px : float
+        Distance in pixels.
+    unit : str
+        Target unit for conversion (e.g., 'nm', 'um', 'mrad').
+    calibrations : dict
+        Dictionary containing calibration factors for different units.
+
+    Returns
+    -------
+    float
+        Distance converted to the specified unit.
+    """
     if unit == "mrad":
         # Multiply the pixel distance by the corresponding scaling factor
         distance_converted = distance_px * calibrations["pixel size mrad"]
@@ -236,6 +316,17 @@ def on_click(event):
 
 # Function to save annotated image and distance list to files
 def save_results():
+    """
+    Save calibration results to file.
+
+    Saves the current calibration parameters and center coordinates to a file
+    for future use.
+
+    Returns
+    -------
+    None
+        Results are saved to disk.
+    """
     global img, distances, calibrations
     #TODO implement save to directory from popup
     #Dictionary to hold the data for each spot

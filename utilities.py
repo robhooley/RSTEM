@@ -43,6 +43,30 @@ def normalise_to_8bit(image):
     return normalized
 
 def create_circular_mask(image_height, image_width, mask_center_coordinates=None, mask_radius=None):
+    """
+    Create a circular mask for a 2D image.
+
+    Generates a boolean mask array where True values form a circle centered
+    at the specified coordinates with the given radius.
+
+    Parameters
+    ----------
+    image_height : int
+        Height of the image in pixels.
+    image_width : int
+        Width of the image in pixels.
+    mask_center_coordinates : tuple of int, optional
+        (x, y) coordinates of the mask center. If None, uses the image center.
+    mask_radius : int, optional
+        Radius of the circular mask in pixels. If None, uses the smallest
+        distance from center to image edge.
+
+    Returns
+    -------
+    numpy.ndarray
+        Boolean array of shape (image_height, image_width) with True inside
+        the circle and False outside.
+    """
     if mask_center_coordinates is None:  # use the middle of the image
         mask_center_coordinates = (int(image_width/2), int(image_height/2))
     if mask_radius is None:  # use the smallest distance between the center and image walls
@@ -52,8 +76,31 @@ def create_circular_mask(image_height, image_width, mask_center_coordinates=None
     mask = dist_from_center <= mask_radius
     return mask
 
-def spot_radius_in_px(data_array): #TODO refactor to be smarter
-    """Takes a data array and works out the diffraction spot radius in pixels from the metadata"""
+def spot_radius_in_px(data_array):
+    """
+    Calculate the diffraction spot radius in pixels from metadata.
+
+    Extracts the diffraction spot radius from the metadata dictionary associated
+    with a data array. If no metadata is present, returns a default value of 10 pixels.
+
+    Parameters
+    ----------
+    data_array : tuple or numpy.ndarray
+        Either a tuple of (image_array, metadata_dict) or just the image array.
+        If a tuple, the metadata dictionary should contain 'Convergence semiangle (mrad)'
+        and 'Diffraction semiangle (mrad)' keys.
+
+    Returns
+    -------
+    float
+        The calculated spot radius in pixels, or 10 if metadata is not available.
+
+    Notes
+    -----
+    The calculation uses the convergence semiangle and diffraction angle from metadata
+    to determine the angle calibration per pixel, then converts the convergence angle
+    to pixels.
+    """
     if type(data_array) is tuple: #checks for metadata dictionary
         image_array = data_array[0] #splits the tuple to image array and metadata dictionary
         metadata = data_array[1] #splits the tuple to image array and metadata dictionary
@@ -72,9 +119,37 @@ def spot_radius_in_px(data_array): #TODO refactor to be smarter
 
     return pixel_radius
 
-def check_memory(camera_frequency_hz,scan_width_px,roi_mode=False,verbose=False):
-    """Checks the current acquisitions size and checks the amount of RAM available to see if it will fit cleanly
-    Returns True or False if the dataset will fit in the RAM"""
+def check_memory(camera_frequency_hz, scan_width_px, roi_mode=False, verbose=False):
+    """
+    Check if a planned acquisition will fit in available RAM.
+
+    Calculates the predicted dataset size based on acquisition parameters and
+    compares it against available system memory to determine if the acquisition
+    can proceed safely.
+
+    Parameters
+    ----------
+    camera_frequency_hz : float
+        Camera acquisition frequency in Hz. Determines bit depth (16-bit for <2250 Hz,
+        8-bit otherwise).
+    scan_width_px : int
+        Width of the scan in pixels (assumes square scan).
+    roi_mode : int or bool, optional
+        ROI mode for camera (128, 256, or 512). If False, uses full 512x512.
+    verbose : bool, optional
+        If True, prints memory availability information.
+
+    Returns
+    -------
+    bool
+        True if the predicted dataset size (with 10% buffer) fits in available RAM,
+        False otherwise.
+
+    Notes
+    -----
+    The calculation includes a 10% buffer on top of the predicted dataset size
+    to account for overhead and other memory usage during acquisition.
+    """
     if camera_frequency_hz < 2250:
         bit_depth = 16
     else:
@@ -99,7 +174,32 @@ def check_memory(camera_frequency_hz,scan_width_px,roi_mode=False,verbose=False)
         will_work = False
     return will_work
 
-def create_scalebar(ax,scalebar_size_pixels,metadata):
+def create_scalebar(ax, scalebar_size_pixels, metadata):
+    """
+    Add a scalebar to a matplotlib axes.
+
+    Creates and adds a horizontal scalebar to the specified axes, with the size
+    converted from pixels to nanometers using the pixel size from metadata.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        The axes to which the scalebar will be added.
+    scalebar_size_pixels : int
+        The length of the scalebar in pixels.
+    metadata : dict
+        Metadata dictionary containing 'Pixel size (nm)' key for conversion.
+
+    Returns
+    -------
+    None
+        The scalebar is added directly to the provided axes.
+
+    Notes
+    -----
+    The scalebar is positioned in the lower right corner of the axes and uses
+    white color for visibility on dark backgrounds.
+    """
     print(scalebar_size_pixels,"scalebar requested in pixels")
     pixel_size = metadata["Pixel size (nm)"]*1e6
     scalebar_nm = int(scalebar_size_pixels*pixel_size)
@@ -113,7 +213,27 @@ def create_scalebar(ax,scalebar_size_pixels,metadata):
     ax.add_artist(scalebar)
 
 def calculate_wavelength(energy):
-    """energy in electronvolts -> return wavelength in picometers"""
+    """
+    Calculate electron wavelength from beam energy.
+
+    Computes the relativistic electron wavelength in picometers given the
+    beam energy in electron volts.
+
+    Parameters
+    ----------
+    energy : float
+        Beam energy in electron volts (eV).
+
+    Returns
+    -------
+    float
+        Electron wavelength in picometers (pm).
+
+    Notes
+    -----
+    Uses relativistic correction for the electron momentum calculation.
+    The formula accounts for the relativistic mass increase at high energies.
+    """
     phir = energy*(1 + scipy.constants.e*energy/(2*scipy.constants.m_e*scipy.constants.c**2))
     g = np.sqrt(2*scipy.constants.m_e*scipy.constants.e*phir)
     k = g/scipy.constants.hbar
@@ -121,6 +241,30 @@ def calculate_wavelength(energy):
     return wavelength*1e12  # to picometers
 
 def generate_colourlist(num_colors_needed, mode=None):
+    """
+    Generate a list of distinct colors for visualization.
+
+    Creates a list of color hex codes for use in plotting and visualization.
+    Supports a special "Explore" mode with a predefined color palette.
+
+    Parameters
+    ----------
+    num_colors_needed : int
+        Number of distinct colors required.
+    mode : str, optional
+        Color selection mode. If "Explore", uses a predefined palette.
+        Otherwise, uses a combination of base CSS colors and random selections.
+
+    Returns
+    -------
+    list of str
+        List of color hex codes (e.g., ["#FF0000", "#00FF00", ...]).
+
+    Notes
+    -----
+    If more colors are needed than available in the predefined palettes,
+    additional colors are randomly selected from the full matplotlib color set.
+    """
     if mode == "Explore": #this is only used as a joke
         print("Using Explores colour palette (Sorry Raman...)")
         reasonable_colors = ["#FF69B4", '#FF00FF', '#F3CFC6', '#FA8072', "#DA70D6","#FAA0A0","#F89880","#A95C68","#E30B5C","#FF10F0","#D8BFD8","#E37383",
@@ -142,6 +286,31 @@ def generate_colourlist(num_colors_needed, mode=None):
     return color_list_output
 
 def generate_colourmaps(num_colors, num_bins=100, mode=None):
+    """
+    Generate a list of colormaps for visualization.
+
+    Creates multiple linear segmented colormaps, each transitioning from black
+    to one of the colors generated by generate_colourlist.
+
+    Parameters
+    ----------
+    num_colors : int
+        Number of distinct colormaps to generate.
+    num_bins : int, optional
+        Number of discrete color levels in each colormap. Default is 100.
+    mode : str, optional
+        Passed to generate_colourlist to control color selection.
+
+    Returns
+    -------
+    list of matplotlib.colors.LinearSegmentedColormap
+        List of colormap objects, each mapping from black to a single color.
+
+    Notes
+    -----
+    Each colormap is named 'black_<color>' where <color> is the hex code
+    of the endpoint color.
+    """
     colormaps = []
     color_list = generate_colourlist(num_colors, mode)
     for color in color_list:

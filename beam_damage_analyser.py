@@ -18,7 +18,23 @@ from expert_pi.RSTEM.bda_functions import calculate_dose, beam_size_matched_acqu
 
 #TODO V1.0 offline analysis
 
-def pointInRect(point,rectangle):
+def pointInRect(point, rectangle):
+    """
+    Check if a point is inside a rectangle.
+
+    Parameters
+    ----------
+    point : tuple of float
+        (y, x) coordinates of the point to check.
+    rectangle : tuple of float
+        (x1, y1, x2, y2) coordinates defining the rectangle's bottom-left
+        and top-right corners.
+
+    Returns
+    -------
+    bool
+        True if the point is inside the rectangle, False otherwise.
+    """
     x1, y1, x2, y2 = rectangle
     y, x = point
     if (x1 < x and x < x2):

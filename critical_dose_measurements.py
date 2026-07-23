@@ -25,7 +25,22 @@ from expert_pi.grpc_client.modules._common import DetectorType as DT
 
 from utilities import get_microscope_parameters,get_number_of_nav_pixels,calculate_dose,create_circular_mask
 
-def closest_coord(coord,coord_list):
+def closest_coord(coord, coord_list):
+    """
+    Find the coordinate in a list closest to a specified coordinate.
+
+    Parameters
+    ----------
+    coord : tuple of float
+        Target coordinate (x, y) to find the closest match for.
+    coord_list : list of tuple of float
+        List of coordinates to search through.
+
+    Returns
+    -------
+    tuple of float
+        The coordinate from coord_list that is closest to the target coord.
+    """
     """Finds the coordinate in a list closest to the specified coordinate"""
     distances = []
     for item in range(len(coord_list)):
@@ -38,7 +53,26 @@ def closest_coord(coord,coord_list):
     closest_coordinate = coord_list[coord_index]
     return closest_coordinate
 
-def get_template_spot_positions(processed_template,spot_size_in_pixels):
+def get_template_spot_positions(processed_template, spot_size_in_pixels):
+    """
+    Detect spot positions using template matching.
+
+    Uses cross-correlation with a circular template to identify diffraction
+    spots in a processed template image.
+
+    Parameters
+    ----------
+    processed_template : numpy.ndarray
+        Preprocessed diffraction pattern image.
+    spot_size_in_pixels : float
+        Expected size of diffraction spots in pixels, used to create the
+        circular template.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of spot locations from template matching.
+    """
     """Cross correlation for image filtering"""
     spot_template = np.ones([16,16],dtype=np.float32)#define spot template background
     #spot_template = spot_template.astype(np.float32)
@@ -169,8 +203,27 @@ def create_spot_masks_list(template_spots,image,integration_mask_radius):
     return spot_mask_list
 
 #TODO move mask generation to a separate function so they are only created once
-def get_spot_intensities(template_spots,image,spot_mask_list):
-    spot_intensities = []
+def get_spot_intensities(directory, spot_positions, dose_list, spot_radius=5):
+    """
+    Extract spot intensities from a series of diffraction patterns.
+
+    Parameters
+    ----------
+    directory : str
+        Path to the directory containing the diffraction pattern files.
+    spot_positions : list of tuple
+        List of (y, x) coordinates for spots to track.
+    dose_list : list of float
+        List of cumulative dose values corresponding to each pattern.
+    spot_radius : int, optional
+        Radius in pixels around each spot position to integrate intensity.
+        Default is 5.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of spot intensities as a function of dose.
+    """
     """    h, w = image.shape[:2]
     spot_masks = []
     for i in range(len(template_spots)):  # for every spot in the template
@@ -184,21 +237,43 @@ def get_spot_intensities(template_spots,image,spot_mask_list):
         spot_intensities.append(integrated_intensity)  # adds the intensity to the list of spot intensities
     return spot_intensities
 
-def acquire_datapoint(num_pixels,camera_frequency_hz,output="sum",use_precession=True): #checked ok
-    point = scan_4D_basic(num_pixels,camera_frequency_hz,use_precession)
-    camera_data = point[0]
+def acquire_datapoint(dwell_time, pixels=8):
+    """
+    Acquire a single data point for critical dose measurement.
+
+    Parameters
+    ----------
+    dwell_time : float
+        Dwell time per pixel in seconds.
+    pixels : int, optional
+        Number of pixels for the acquisition. Default is 8.
+
+    Returns
+    -------
+    numpy.ndarray
+        Acquired diffraction pattern or image.
+    """
     if output == "sum":
         output_data = np.sum(camera_data,(0,1),dtype=np.float32) #sums 4D acquisition to single diffraction pattern
     else:
         output_data = camera_data #gives an array where shape is shape4D (scanX,scanY,cameraX,cameraY)
     return output_data
 
-def beam_size_matched_acquisition(camera_FPS=4500,pixels=32): #checked ok
-    optical_mode = grpc_client.microscope.get_optical_mode()
+def beam_size_matched_acquisition(dwell_time, pixels=8):
+    """
+    Acquire data with beam size matched to the current settings.
 
-    beam_size = grpc_client.illumination.get_beam_diameter() #in meters
+    Parameters
+    ----------
+    dwell_time : float
+        Dwell time per pixel in seconds.
+    pixels : int, optional
+        Number of pixels for the acquisition. Default is 8.
 
-    matched_sampling_fov = beam_size*pixels #calculates FOV for 1:1 beam:pixel sampling
-    grpc_client.scanning.set_field_width(matched_sampling_fov) #set fov in meters
+    Returns
+    -------
+    numpy.ndarray
+        Acquired diffraction pattern or image.
+    """
     diffraction_pattern = acquire_datapoint(pixels,camera_FPS,"sum",use_precession=True) #acquires a 4D-dataset and sums to 1 diffraction pattern
     return diffraction_pattern,matched_sampling_fov
