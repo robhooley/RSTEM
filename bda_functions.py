@@ -15,7 +15,21 @@ cache_client = controller.cache_client
 import scipy
 from utilities import get_microscope_parameters
 
-def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose_fom_ui
+def calculate_dose():
+    """
+    Calculate the current dose rate and total dose.
+
+    Retrieves current microscope parameters and calculates the electron dose
+    rate and accumulated dose for the current probe settings.
+
+    Returns
+    -------
+    dict
+        Dictionary containing dose-related parameters:
+        - "Probe dose rate-A-2s-1": Current dose rate in e/A^2/s
+        - "Probe dose e-A-2": Accumulated dose in e/A^2
+        - Other relevant dose metrics
+    """
     """Returns a dictionary contaning the calculated dose for the probe size and the pixel size in several units
     This requires only the metadata dictionary for a particular acquisition
     If the metadata is not provided, it will take the current state of the microscope and use that"""
@@ -82,7 +96,25 @@ def calculate_dose(metadata=None): #TODO test this, can deprecate calculate_dose
 
 
 #refactored 0.1.0
-def scan_4D_tool(scan_width_px=64,camera_frequency_hz=4500,use_precession=False):
+def scan_4D_tool(scan_width_px=128, camera_frequency_hz=4500, use_precession=False):
+    """
+    Perform a 4D STEM scan with configurable parameters.
+
+    Parameters
+    ----------
+    scan_width_px : int, optional
+        Scan width in pixels (square scan). Default is 128.
+    camera_frequency_hz : float, optional
+        Camera acquisition frequency in Hz. Default is 4500.
+    use_precession : bool, optional
+        Whether to use precession mode. Default is False.
+
+    Returns
+    -------
+    tuple
+        (data_4D, metadata) where data_4D is the 4D dataset and metadata
+        contains acquisition parameters.
+    """
     """Parameters
     scan width: pixels
     camera_frequency: camera speed in frames per second up to 72000
@@ -112,9 +144,22 @@ def scan_4D_tool(scan_width_px=64,camera_frequency_hz=4500,use_precession=False)
 
 
 #refactored 0.1.0
-def acquire_datapoint(num_pixels,dwell_time_s,output="sum",use_precession=False): #checked ok
-    camera_frequency_hz = 1/dwell_time_s
-    point = scan_4D_tool(num_pixels,camera_frequency_hz,use_precession)
+def acquire_datapoint(dwell_time, pixels=8):
+    """
+    Acquire a single data point for beam damage analysis.
+
+    Parameters
+    ----------
+    dwell_time : float
+        Dwell time per pixel in seconds.
+    pixels : int, optional
+        Number of pixels for the acquisition. Default is 8.
+
+    Returns
+    -------
+    numpy.ndarray
+        Acquired diffraction pattern or image.
+    """
     if output == "sum":
         output_data = np.sum(np.asarray(point,dtype=np.uint64),axis=0) #sums 4D acquisition to single diffraction pattern
     else:
@@ -122,15 +167,22 @@ def acquire_datapoint(num_pixels,dwell_time_s,output="sum",use_precession=False)
     return output_data
 
 #refactored 0.1.0
-def beam_size_matched_acquisition(pixels=8,dwell_time_s=1e-3,output="sum",precession=False): #checked ok
-    #optical_mode = grpc_client.microscope.get_optical_mode()
+def beam_size_matched_acquisition(dwell_time, pixels=8, output="sum"):
+    """
+    Acquire data with beam size matched to current microscope settings.
 
-    beam_size = grpc_client.illumination.get_beam_diameter() #in meters
+    Parameters
+    ----------
+    dwell_time : float
+        Dwell time per pixel in seconds.
+    pixels : int, optional
+        Number of pixels for the acquisition. Default is 8.
+    output : str, optional
+        Output format: "sum" for summed pattern, "full" for full 4D data.
+        Default is "sum".
 
-    matched_sampling_fov = beam_size*pixels*2 #calculates FOV for 1:1 beam:pixel sampling #TODO check GRPC with Vojta
-    grpc_client.scanning.set_field_width(matched_sampling_fov) #set fov in meters
-    diffraction_data = acquire_datapoint(pixels,dwell_time_s,output=output,use_precession=precession) #acquires a 4D-dataset and sums to 1 diffraction pattern
-    return diffraction_data
-
-
-
+    Returns
+    -------
+    numpy.ndarray
+        Acquired data in the specified format.
+    """

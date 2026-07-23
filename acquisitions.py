@@ -56,6 +56,27 @@ else:
 
 def scan_4D_basic(scan_width_px=128, camera_frequency_hz=4500, use_precession=False):
     """
+    Perform a basic 4D STEM scan.
+
+    Acquires a 4D dataset (scan_y, scan_x, dp_y, dp_x) with configurable
+    scan width and camera frequency.
+
+    Parameters
+    ----------
+    scan_width_px : int, optional
+        Scan width in pixels (square scan). Default is 128.
+    camera_frequency_hz : float, optional
+        Camera acquisition frequency in Hz. Default is 4500.
+    use_precession : bool, optional
+        Whether to use precession mode. Default is False.
+
+    Returns
+    -------
+    tuple
+        (data_4D, metadata) where data_4D is the 4D numpy array and metadata
+        is a dictionary containing acquisition parameters.
+    """
+    """
     Parameters
     ----------
     scan_width_px : int
@@ -127,7 +148,31 @@ def scan_4D_basic(scan_width_px=128, camera_frequency_hz=4500, use_precession=Fa
     return image_array, metadata
 
 
-def scan_4D(scan_width_px=128,dwell_time=5.556e-5,use_precession=False,roi_mode=128,post_crop=True,reset_after=True):
+def scan_4D(scan_width_px=128, dwell_time=5.556e-5, use_precession=False, roi_mode=128, post_crop=True, reset_after=True):
+    """
+    Perform an advanced 4D STEM scan with full configuration.
+
+    Parameters
+    ----------
+    scan_width_px : int, optional
+        Scan width in pixels (square scan). Default is 128.
+    dwell_time : float, optional
+        Dwell time per pixel in seconds. Default is 5.556e-5.
+    use_precession : bool, optional
+        Whether to use precession mode. Default is False.
+    roi_mode : int, optional
+        ROI mode for camera (128, 256, or 512). Default is 128.
+    post_crop : bool, optional
+        Whether to crop the data after acquisition. Default is True.
+    reset_after : bool, optional
+        Whether to reset microscope settings after acquisition. Default is True.
+
+    Returns
+    -------
+    tuple
+        (data_4D, metadata) where data_4D is the 4D numpy array and metadata
+        contains acquisition parameters.
+    """
     """Parameters
     scan width: pixels
     camera_frequency: camera speed in frames per second up to 72000
@@ -197,7 +242,34 @@ def scan_4D(scan_width_px=128,dwell_time=5.556e-5,use_precession=False,roi_mode=
     return (image_array,metadata) #tuple with image data and metadata
 
 #refactored to 0.5.1
-def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pixel_time=5e-6):
+def acquire_focal_series(extent_nm, steps=11, BF=True, ADF=False, num_pixels=1024, pixel_time=5e-6):
+    """
+    Acquire a focal series (through-focus series) of images.
+
+    Captures a series of images at different focus values, spanning the
+    specified extent around the current focus.
+
+    Parameters
+    ----------
+    extent_nm : float
+        Total focus range to cover in nanometers, centered on current focus.
+    steps : int, optional
+        Number of focus steps. Default is 11.
+    BF : bool, optional
+        Whether to acquire bright field images. Default is True.
+    ADF : bool, optional
+        Whether to acquire annular dark field images. Default is False.
+    num_pixels : int, optional
+        Number of pixels for each image. Default is 1024.
+    pixel_time : float, optional
+        Dwell time per pixel in seconds. Default is 5e-6.
+
+    Returns
+    -------
+    tuple
+        (image_series, metadata) where image_series is a list of images and
+        metadata contains acquisition parameters for each image.
+    """
     """Parameters
     extent_nm: Range the focal series should cover split equally around the current focus value
     steps: how many total steps the focal series should cover
@@ -273,7 +345,29 @@ def acquire_focal_series(extent_nm,steps=11,BF=True,ADF=False,num_pixels=1024,pi
     return image_series,defocus_offsets
 
 #TODO REFACTORED UNTESTED
-def acquire_FOV_series(upper_fov,lower_fov,steps=10,num_pixels=None,pixel_time=None):
+def acquire_FOV_series(upper_fov, lower_fov, steps=10, num_pixels=None, pixel_time=None):
+    """
+    Acquire a series of images at different field of view (FOV) settings.
+
+    Parameters
+    ----------
+    upper_fov : float
+        Upper FOV limit in microns.
+    lower_fov : float
+        Lower FOV limit in microns.
+    steps : int, optional
+        Number of FOV steps. Default is 10.
+    num_pixels : int, optional
+        Number of pixels for each image. If None, uses current settings.
+    pixel_time : float, optional
+        Dwell time per pixel in seconds. If None, uses current settings.
+
+    Returns
+    -------
+    tuple
+        (image_series, metadata) where image_series is a list of images at
+        different FOVs and metadata contains acquisition parameters.
+    """
     """Parameters
     upper_fov: upper end of the fov series in microns #TODO needs a max fov validation adding
     lower_fov: lower end of the fov series in microns#TODO needs a min fov validation adding
@@ -331,6 +425,26 @@ def acquire_FOV_series(upper_fov,lower_fov,steps=10,num_pixels=None,pixel_time=N
 
 #TODO REFACTORED UNTESTED
 def acquire_STEM(fov=None, pixel_time=None, num_pixels=None, scan_rotation_deg=None):
+    """
+    Acquire a single STEM image from the inserted detectors.
+
+    Parameters
+    ----------
+    fov : float, optional
+        Field of view in microns. If None, uses current setting.
+    pixel_time : float, optional
+        Dwell time per pixel in seconds. If None, uses current setting.
+    num_pixels : int, optional
+        Number of pixels for the image. If None, uses current setting.
+    scan_rotation_deg : float, optional
+        Scan rotation in degrees. If None, uses current setting.
+
+    Returns
+    -------
+    tuple
+        (images_list, metadata_dict) where images_list contains the acquired
+        images from each detector and metadata_dict contains acquisition parameters.
+    """
     """Acquires a single STEM image from the inserted detectors
     returns (images_list, metadata_dict)
     """
@@ -387,29 +501,55 @@ def acquire_STEM(fov=None, pixel_time=None, num_pixels=None, scan_rotation_deg=N
 
 
 #TODO REFACTORED
-def acquire_series(num_frames=10,pixel_time=None,num_pixels=None):
+def acquire_series(num_frames=10, pixel_time=None, num_pixels=None):
+    """
+    Acquire a series of images with the same settings.
 
-    app = get_app()
+    Parameters
+    ----------
+    num_frames : int, optional
+        Number of frames to acquire. Default is 10.
+    pixel_time : float, optional
+        Dwell time per pixel in seconds. If None, uses current setting.
+    num_pixels : int, optional
+        Number of pixels for each image. If None, uses current setting.
 
-    BF_images_list = []
-    ADF_images_list = []
-
-    if pixel_time==None:
-        pixel_time = app.scanning.get_pixel_time()
-    if num_pixels == None:
-        num_pixels = app.scanning.get_pixel_count().value
-
-
-    scan = app.acquisition.acquire_stem(pixel_time=pixel_time, total_size=num_pixels, frames=num_frames,
-                                            detectors=(DT.BF, DT.HAADF))
-    for frame in range(num_frames):
-        images = scan.get_frame(frame)
+    Returns
+    -------
+    tuple
+        (image_series, metadata) where image_series is a list of acquired
+        images and metadata contains acquisition parameters.
+    """
         BF_images_list.append(images["BF"])
         ADF_images_list.append(images["HAADF"])
 
     return (BF_images_list,ADF_images_list)
 
 def rotational_correction(raw_shift, fov_x, fov_y, theta_deg, y_down=True):
+    """
+    Map registration shift to deflector delta (physical units).
+
+    Converts image registration shifts (in normalized coordinates) to physical
+    deflector adjustments, accounting for scan rotation.
+
+    Parameters
+    ----------
+    raw_shift : tuple of float
+        (dx, dy) registration shift in normalized image coordinates.
+    fov_x : float
+        Field of view in x direction in meters.
+    fov_y : float
+        Field of view in y direction in meters.
+    theta_deg : float
+        Scan rotation angle in degrees.
+    y_down : bool, optional
+        Whether the y-axis points downward. Default is True.
+
+    Returns
+    -------
+    tuple of float
+        (delta_x, delta_y) deflector adjustments in physical units.
+    """
     """
     Map registration shift (normalized image coords) to deflector delta (physical).
     raw_shift: (dx_norm, dy_norm) where +x=right, +y=down in image.
@@ -432,7 +572,38 @@ def rotational_correction(raw_shift, fov_x, fov_y, theta_deg, y_down=True):
     delta_deflector = -v_scan
     return float(delta_deflector[0]), float(delta_deflector[1])
 
-def drift_corrected_imaging(num_frames=10, pixel_time=None, num_pixels=None, host=None,model_name="TEMRegistration",logging=False):  # TODO full refactor needed
+def drift_corrected_imaging(num_frames=10, pixel_time=None, num_pixels=None, host=None, model_name="TEMRegistration", logging=False):
+    """
+    Acquire a series of images with drift correction.
+
+    Uses image registration to correct for drift between frames, producing
+    a series of aligned images.
+
+    Parameters
+    ----------
+    num_frames : int, optional
+        Total number of frames to acquire (including seed frame). Default is 10.
+    pixel_time : float, optional
+        Dwell time per pixel in seconds. If None, uses current setting.
+    num_pixels : int, optional
+        Number of pixels for each image. If None, uses current setting.
+    host : str, optional
+        Host address for TorchServe instance.
+    model_name : str, optional
+        Name of the registration model to use. Default is "TEMRegistration".
+    logging : bool, optional
+        Whether to enable logging. Default is False.
+
+    Returns
+    -------
+    tuple
+        (aligned_series, metadata) where aligned_series is a list of drift-corrected
+        images and metadata contains acquisition parameters.
+
+    Notes
+    -----
+    TODO: Full refactor needed for better integration and error handling.
+    """
     """Parameters
     num_frames : integer number of frames to acquire (total, including the seed frame)
     pixel_time_us: pixel dwell time in microseconds; if None, read from UI
@@ -608,38 +779,27 @@ def drift_corrected_imaging(num_frames=10, pixel_time=None, num_pixels=None, hos
     return results
 
 #TODO REFACTORED why not working?
-def point_acquisition(pixel_offsets=None,dwell_time=None,return_metadata=True,set_off_axis_after=False):
+def point_acquisition(pixel_offsets=None, dwell_time=None, return_metadata=True, set_off_axis_after=False):
+    """
+    Acquire data at specific pixel offsets (non-raster scan).
 
-    app = get_app()
-    N=1
+    Parameters
+    ----------
+    pixel_offsets : list of tuple, optional
+        List of (x, y) pixel offsets to acquire. If None, uses default pattern.
+    dwell_time : float, optional
+        Dwell time per pixel in seconds. If None, uses current setting.
+    return_metadata : bool, optional
+        Whether to return metadata. Default is True.
+    set_off_axis_after : bool, optional
+        Whether to set off-axis mode after acquisition. Default is False.
 
-    bf_in = app.api.stem_detector.get_is_inserted(DT.BF)
-    haadf_in = app.api.stem_detector.get_is_inserted(DT.HAADF)
-    app.scanning.set_off_axis(False)
-    if bf_in or haadf_in:
-        if bf_in:
-            app.detectors.stem.insert_bf(False)
-        if haadf_in:
-            app.detectors.stem.insert_df(False)
-
-
-
-    overview = app.scanning.get_pixel_count().value
-
-    if dwell_time is None:
-        dwell_time = app.detectors.camera.get_exposure()*1e-3 #milliseconds to seconds
-
-    if pixel_offsets == None: #use center pixel
-        rectangle = [overview/2,overview/2,N,N]
-    else:
-        rectangle = [pixel_offsets[0],pixel_offsets[1],N,N]
-    app.scanning.set_off_axis(False)
-    pointer = app.acquisition.acquire_camera(pixel_time=dwell_time, total_size=overview, frames=1, rectangle=rectangle,precession_enabled=None)
-    image = pointer.get_frame()
-    camera_data = image.camera[0][0]
-    if set_off_axis_after:
-        app.scanning.set_off_axis(True)
-    if return_metadata:
+    Returns
+    -------
+    tuple
+        (data, metadata) if return_metadata is True, otherwise just data.
+        data is a list or array of acquired values at each offset.
+    """
         metadata = collect_metadata(acquisition_type="4D")
         return camera_data,metadata
     else:
@@ -647,7 +807,20 @@ def point_acquisition(pixel_offsets=None,dwell_time=None,return_metadata=True,se
 
 #TODO refactored but untested
 def acquire_precession_tilt_series(upper_limit_degrees):
+    """
+    Acquire a series of precession diffraction patterns from 0 to max angle.
 
+    Parameters
+    ----------
+    upper_limit_degrees : float
+        Maximum precession tilt angle in degrees.
+
+    Returns
+    -------
+    tuple
+        (pattern_series, metadata) where pattern_series is a list of diffraction
+        patterns at different tilt angles and metadata contains acquisition parameters.
+    """
     """Acquires a series of precession diffraction patterns from 0 to the max angle in 0.1 degree steps"""
 
     app = get_app()
@@ -710,8 +883,23 @@ def acquire_precession_tilt_series(upper_limit_degrees):
     return annotated_images,angle_list
 
 
-def acquire_projection_series(lower_angle,higher_angle):
+def acquire_projection_series(lower_angle, higher_angle):
+    """
+    Acquire a series of projection images at different angles.
 
+    Parameters
+    ----------
+    lower_angle : float
+        Starting angle for the series.
+    higher_angle : float
+        Ending angle for the series.
+
+    Returns
+    -------
+    tuple
+        (image_series, metadata) where image_series is a list of projection
+        images and metadata contains acquisition parameters.
+    """
     """Acquires a series of precession diffraction patterns from 0 to the max angle in 0.1 degree steps"""
 
     app = get_app()
