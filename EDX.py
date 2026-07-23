@@ -58,7 +58,33 @@ else:
 #from expert_pi.measurements import edx_processing
 
 #TODO update to ML with scan rotation
-def acquire_EDX_map(frames=10,pixel_time=10e-6,num_pixels=None,host=None,model_name="TEMRegistration",logging=True):
+def acquire_EDX_map(frames=10, pixel_time=10e-6, num_pixels=None, host=None, model_name="TEMRegistration", logging=True):
+    """
+    Acquire an EDX (Energy Dispersive X-ray) map.
+
+    Performs an EDX acquisition with specified parameters and returns the
+    collected spectral data.
+
+    Parameters
+    ----------
+    frames : int
+        Number of frames/scan points to acquire.
+    pixel_time : float
+        Dwell time per pixel in seconds.
+    num_pixels : tuple, optional
+        Number of pixels in (x, y) directions. If None, uses current settings.
+    host : str, optional
+        Host address for the TorchServe instance. Default is None.
+    model_name : str, optional
+        Name of the model to use for processing. Default is "TEMRegistration".
+    logging : bool, optional
+        Whether to enable logging. Default is True.
+
+    Returns
+    -------
+    numpy.ndarray
+        3D array containing the EDX spectral data (energy, y, x).
+    """
     """Parameters
     frames: number of scans
     pixel_time: in seconds
@@ -107,12 +133,22 @@ def acquire_EDX_map(frames=10,pixel_time=10e-6,num_pixels=None,host=None,model_n
     # Helpers
 
 
-    def _acquire_frame(pixel_time,num_pixels):
-        scan = app.acquisition.acquire_stem(pixel_time=pixel_time, total_size=num_pixels, frames=1,
-                                            detectors=(DT.BF,DT.HAADF),edx_detectors=(DT.EDX0,DT.EDX1))
-        image = scan.get_all()
-        EDX_data = scan.edx.get_frame(0)
+    def _acquire_frame(pixel_time, num_pixels):
+    """
+    Internal function to acquire a single EDX frame.
 
+    Parameters
+    ----------
+    pixel_time : float
+        Dwell time per pixel in seconds.
+    num_pixels : tuple
+        Number of pixels in (x, y) directions.
+
+    Returns
+    -------
+    numpy.ndarray
+        Single frame of EDX data.
+    """
         frame = { "HAADF": image["HAADF"][0], "EDX": EDX_data}
         return frame
 
@@ -237,6 +273,25 @@ def acquire_EDX_map(frames=10,pixel_time=10e-6,num_pixels=None,host=None,model_n
 
 
 def construct_maps(map_data=None, elements=None, end_of_series=None, mode=None):
+    """
+    Construct element maps from EDX spectral data.
+
+    Parameters
+    ----------
+    map_data : numpy.ndarray, optional
+        Pre-loaded EDX map data. If None, loads from file.
+    elements : list of str, optional
+        List of element symbols to map (e.g., ["Al", "Cu", "Fe"]).
+    end_of_series : str, optional
+        Filename pattern indicating the end of a series.
+    mode : str, optional
+        Processing mode.
+
+    Returns
+    -------
+    dict
+        Dictionary containing element maps and metadata.
+    """
     """parameters
     map_data : if map_data is stored in RAM, or left as None to load from file
     elements : List of elements in string format ["Cu","Al","Ti"]
@@ -387,9 +442,24 @@ def construct_maps(map_data=None, elements=None, end_of_series=None, mode=None):
     cv2.imwrite(save_folder + '/HAADF_0.tif',HAADF)
 
 
-def produce_spectrum(map_data=None,elements=None,normalise=False):
-    edx_data = []
+def produce_spectrum(map_data=None, elements=None, normalise=False):
+    """
+    Produce a spectrum from EDX map data.
 
+    Parameters
+    ----------
+    map_data : numpy.ndarray, optional
+        EDX map data.
+    elements : list of str, optional
+        List of elements to include in the spectrum.
+    normalise : bool, optional
+        Whether to normalize the spectrum. Default is False.
+
+    Returns
+    -------
+    tuple
+        (energy_axis, spectrum) arrays.
+    """
     print("loading data")
     if map_data == None: #loads map data from disk
         map_data = []
@@ -445,29 +515,42 @@ def produce_spectrum(map_data=None,elements=None,normalise=False):
 
     #TODO functional but needs commments and refactoring
 
-def get_xray_lines(elements=[],intensity_threshold=0.05):
+def get_xray_lines(elements=[], intensity_threshold=0.05):
+    """
+    Get characteristic X-ray line energies for specified elements.
+
+    Parameters
+    ----------
+    elements : list of str
+        List of element symbols (e.g., ["Al", "Cu"]).
+    intensity_threshold : float, optional
+        Minimum relative intensity threshold for including lines. Default is 0.05.
+
+    Returns
+    -------
+    dict
+        Dictionary mapping element symbols to their characteristic X-ray line
+        energies and relative intensities.
+    """
     """Params
     elements : List of elements in individual strings ["Al","Cu","Fe"],
     intensity_threshold : minimum peak intensity normalised to the strongest peak
     returns a dictionary with the X-ray line family and energy"""
 
     def list_duplicates(seq):
-        tally = defaultdict(list)
-        for i, item in enumerate(seq):
-            tally[item].append(i)
-        return ((key, locs) for key, locs in tally.items()
-                if len(locs) > 1)
+    """
+    Remove duplicate elements from a sequence while preserving order.
 
-    line_family_list = []
-    family_energy_list = []
-    line_dictionary = {} #opens empty dictionary to hold lines and energies
-    for element in elements: #for each element
-        line_details = [] #empty list for line names
-        line_energies = [] #empty list for line energies
-        lines = xdb.xray_lines(element) #gets all lines for an element
-        for line_name,info in zip(lines.keys(),lines.values()): #for each line
-            if info.intensity >= intensity_threshold and 20000 >= info.energy >= 200: #filters out low,high energy and minor lines
-                line_name = line_name[:2] #cuts it to just the first two characters ie ka2 to ka
+    Parameters
+    ----------
+    seq : list
+        Input sequence potentially containing duplicates.
+
+    Returns
+    -------
+    list
+        List with duplicates removed.
+    """
                 line_detail = (element+" "+line_name) #adds the name to the list
                 #print(line_detail)
                 line_details.append(line_detail) #adds the name to the list
@@ -492,6 +575,23 @@ def get_xray_lines(elements=[],intensity_threshold=0.05):
     return line_dictionary
 
 def integrate_energy_window(signal, energy_lower, energy_higher):
+    """
+    Integrate a HyperSpy 2D signal within a specified energy window.
+
+    Parameters
+    ----------
+    signal : hyperspy.signal
+        2D HyperSpy signal to integrate.
+    energy_lower : float
+        Lower bound of the energy window.
+    energy_higher : float
+        Upper bound of the energy window.
+
+    Returns
+    -------
+    numpy.ndarray
+        Integrated intensity within the energy window.
+    """
     """
     Integrate a HyperSpy 2D signal within a given energy window.
 
@@ -549,6 +649,24 @@ def integrate_energy_window(signal, energy_lower, energy_higher):
 
 def summed_spectrum_from_coords(signal, coords, average=False):
     """
+    Extract and sum spectra from specified coordinates in a 2D HyperSpy signal.
+
+    Parameters
+    ----------
+    signal : hyperspy.signal
+        2D HyperSpy signal containing spectral data.
+    coords : list of tuple
+        List of (y, x) coordinates to extract spectra from.
+    average : bool, optional
+        If True, returns the average spectrum. If False, returns the sum.
+        Default is False.
+
+    Returns
+    -------
+    numpy.ndarray
+        Summed or averaged spectrum.
+    """
+    """
     Extract and sum spectra from a list of (y, x) coordinates in a 2D HyperSpy signal.
 
     Parameters
@@ -604,12 +722,32 @@ def summed_spectrum_from_coords(signal, coords, average=False):
 
     return summed_spectrum
 
-def post_align_EDX_series(image_series,map_list, plot=True,model="TEMRomaTiny",host="192.168.51.3",measured_shifts=None,port=8080):
+def post_align_EDX_series(image_series, map_list, plot=True, model="TEMRomaTiny", host="192.168.51.3", measured_shifts=None, port=8080):
+    """
+    Align a series of EDX maps based on simultaneously acquired STEM images.
 
-    #TODO handle dictionary of multiple maps with element labels
-    #TODO test passing previous shifts in to skip inference
-    #TODO add in catch so if registration fails it skips the image and does not warp it or the maps
+    Parameters
+    ----------
+    image_series : list of numpy.ndarray
+        List of STEM images acquired simultaneously with EDX maps.
+    map_list : list of numpy.ndarray
+        List of EDX maps to align.
+    plot : bool, optional
+        Whether to plot alignment results. Default is True.
+    model : str, optional
+        Model name for alignment. Default is "TEMRomaTiny".
+    host : str, optional
+        Host address for TorchServe. Default is "192.168.51.3".
+    measured_shifts : list, optional
+        Pre-measured shifts to use instead of calculating.
+    port : int, optional
+        Port number for TorchServe. Default is 8080.
 
+    Returns
+    -------
+    list of numpy.ndarray
+        Aligned EDX maps.
+    """
     """
     Align a list of EDX maps based on the simultaneously acquired STEM images
      Works from the first frame using the TEMRegistration model
@@ -735,7 +873,32 @@ def post_align_EDX_series(image_series,map_list, plot=True,model="TEMRomaTiny",h
 
     return [translated_list,translated_map_list, summed_map,summed_image,shifts]
 
-def non_local_means_filter(image,patch_size=7,patch_distance=11,h=None,sigma=None,fast_mode=True,preserve_range=True):
+def non_local_means_filter(image, patch_size=7, patch_distance=11, h=None, sigma=None, fast_mode=True, preserve_range=True):
+    """
+    Apply Non-Local Means (NLM) denoising to a 2D or 3D image.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        Input image array (2D grayscale or 3D color).
+    patch_size : int, optional
+        Size of patches for similarity comparison. Default is 7.
+    patch_distance : int, optional
+        Maximum distance for patch comparison. Default is 11.
+    h : float, optional
+        Filter strength parameter. If None, calculated automatically.
+    sigma : float, optional
+        Noise standard deviation. If None, estimated from image.
+    fast_mode : bool, optional
+        Use fast approximation. Default is True.
+    preserve_range : bool, optional
+        Preserve the original value range. Default is True.
+
+    Returns
+    -------
+    numpy.ndarray
+        Denoised image.
+    """
     """
     Apply Non-Local Means (NLM) denoising to a 2D (grayscale) or 3D (color) image.
 
